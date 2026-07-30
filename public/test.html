@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>测试页面</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; padding: 20px; background: #fafafa; }
+    button { 
+      padding: 16px 32px; font-size: 18px; border-radius: 10px;
+      background: #171717; color: white; border: none; margin: 8px 0; width: 100%;
+      min-height: 50px; -webkit-appearance: none;
+    }
+    .test { font-size: 24px; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <h1>测试：点击按钮</h1>
+  <p class="test" id="counter">点击次数: 0</p>
+  <button onclick="document.getElementById('counter').textContent = '点击次数: ' + (++window._c || (window._c=1))">
+    点我测试
+  </button>
+  <button onclick="alert('按钮2工作正常')">
+    按钮二
+  </button>
+  <p style="margin-top: 20px; color: #999; font-size: 14px;">
+    如果这个页面能点击，说明问题在 React/Next.js 层面<br>
+    如果这个页面也不能点击，说明问题在网络或 Safari 层面
+  </p>
+</body>
+</html>

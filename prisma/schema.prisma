@@ -1,0 +1,152 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String   @default("hky")
+  examDate  DateTime @default(now())
+  createdAt DateTime @default(now())
+  sessions  StudySession[]
+  tasks     Task[]
+}
+
+model Subject {
+  id             String   @id @default(uuid())
+  name           String
+  targetScore    Float?
+  color          String   @default("#000000")
+  chapters       Chapter[]
+  knowledgeNodes KnowledgeNode[]
+  mistakeItems   MistakeItem[]
+  studySessions  StudySession[]
+  resources      Resource[]
+  tasks          Task[]
+  createdAt      DateTime @default(now())
+}
+
+model Chapter {
+  id             String   @id @default(uuid())
+  subjectId      String
+  subject        Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  name           String
+  progress       Float    @default(0)
+  order          Int      @default(0)
+  knowledgeNodes KnowledgeNode[]
+}
+
+model KnowledgeNode {
+  id           String   @id @default(uuid())
+  subjectId    String
+  subject      Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  chapterId    String?
+  chapter      Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  parentId     String?
+  parent       KnowledgeNode?       @relation("NodeTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     KnowledgeNode[]      @relation("NodeTree")
+  name         String
+  masteryLevel Int      @default(0) // 0-5
+  status       String   @default("unlearned") // unlearned/learning/mastered/keypoint/frequent_mistake
+  tags         String?
+  pageStart    Int?
+  pageEnd      Int?
+  description  String?  // 我的理解 / Markdown notes
+  nextReviewAt DateTime?
+  lastReviewAt DateTime?
+  mistakeItems MistakeItem[]
+  resources    Resource[]
+  relatedNodesAsSource KnowledgeNodeRelation[] @relation("RelatedSource")
+  relatedNodesAsTarget KnowledgeNodeRelation[] @relation("RelatedTarget")
+  notes        Note[]  // many-to-many
+  createdAt    DateTime @default(now())
+}
+
+model KnowledgeNodeRelation {
+  id        String        @id @default(uuid())
+  sourceId  String
+  source    KnowledgeNode @relation("RelatedSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  targetId  String
+  target    KnowledgeNode @relation("RelatedTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  label     String?
+}
+
+model MistakeItem {
+  id              String         @id @default(uuid())
+  subjectId       String
+  subject         Subject        @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  knowledgeNodeId String?
+  knowledgeNode   KnowledgeNode? @relation(fields: [knowledgeNodeId], references: [id], onDelete: SetNull)
+  title           String
+  content         String
+  imageUrl        String?
+  answer          String?
+  errorType       String?
+  errorReason     String?
+  aiAnalysis      String?
+  relatedKnowledge String?
+  reviewStatus    String         @default("pending")
+  createdAt       DateTime       @default(now())
+  reviewedAt      DateTime?
+}
+
+model StudySession {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subjectId       String
+  subject         Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  date            DateTime @default(now())
+  durationMinutes Int
+  notes           String?
+}
+
+model Task {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subjectId String?
+  subject   Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+  title     String
+  completed Boolean  @default(false)
+  priority  Int      @default(0)
+  date      DateTime @default(now())
+  createdAt DateTime @default(now())
+}
+
+model DailyReview {
+  id        String   @id @default(uuid())
+  date      DateTime @default(now())
+  rating    Int      @default(3)
+  aiSummary String
+  strengths String?
+  problems  String?
+  suggestion String?
+  createdAt DateTime @default(now())
+}
+
+model Resource {
+  id              String         @id @default(uuid())
+  subjectId       String
+  subject         Subject        @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  knowledgeNodeId String?
+  knowledgeNode   KnowledgeNode? @relation(fields: [knowledgeNodeId], references: [id], onDelete: SetNull)
+  title           String
+  type            String
+  fileUrl         String?
+  tags            String?
+  createdAt       DateTime       @default(now())
+}
+
+model Note {
+  id             String          @id @default(uuid())
+  title          String
+  content        String
+  tags           String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  knowledgeNodes KnowledgeNode[] // many-to-many
+}
