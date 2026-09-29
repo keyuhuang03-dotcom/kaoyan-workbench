@@ -1,18 +1,9 @@
-import { prisma } from "@/lib/prisma";
 import { CheckSquare } from "lucide-react";
 import TaskList from "@/components/tasks/TaskList";
+import { getTodayTasksWithCarryOver } from "@/lib/tasks";
 
 export default async function TasksPage() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const tasks = await prisma.task.findMany({
-    where: { date: { gte: today, lt: tomorrow } },
-    include: { subject: true },
-    orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
-  });
+  const tasks = await getTodayTasksWithCarryOver();
 
   return (
     <div className="max-w-2xl mx-auto space-y-4 md:space-y-6">

@@ -17,7 +17,7 @@ async function main() {
   await prisma.user.deleteMany();
 
   // Create user
-  const user = await prisma.user.create({
+  await prisma.user.create({
     data: { id: "default", name: "hky", examDate: new Date("2027-12-25") },
   });
 

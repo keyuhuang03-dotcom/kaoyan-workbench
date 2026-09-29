@@ -18,3 +18,12 @@ export async function PATCH(
 
   return NextResponse.json(mistake);
 }
+
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  await prisma.mistakeItem.delete({ where: { id } });
+  return NextResponse.json({ ok: true });
+}

@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
-import { FileText, Star, RefreshCw } from "lucide-react";
+import { FileText, Star } from "lucide-react";
+import ReviewQueue from "@/components/dashboard/ReviewQueue";
+import GenerateReviewButton from "@/components/daily-review/GenerateReviewButton";
 
 export default async function DailyReviewPage() {
   const today = new Date();
@@ -18,7 +20,8 @@ export default async function DailyReviewPage() {
     }),
   ]);
 
-  const latestReview = reviews[0];
+  const todayReview = reviews.find((review) => review.date >= today && review.date < tomorrow);
+  const historyReviews = reviews.filter((review) => review.id !== todayReview?.id);
 
   const subjectHours: Record<string, number> = {};
   for (const s of todaySessions) {
@@ -68,7 +71,7 @@ export default async function DailyReviewPage() {
           )}
         </div>
 
-        {latestReview ? (
+        {todayReview ? (
           <div className="space-y-4 pt-4 border-t border-[var(--card-border)]">
             <div>
               <div className="text-xs text-[var(--muted-foreground)] mb-2 font-medium">
@@ -81,7 +84,7 @@ export default async function DailyReviewPage() {
                     size={16}
                     strokeWidth={1.5}
                     className={
-                      i <= latestReview.rating
+                      i <= todayReview.rating
                         ? "fill-[var(--foreground)] text-[var(--foreground)]"
                         : "text-[var(--card-border)]"
                     }
@@ -95,30 +98,30 @@ export default async function DailyReviewPage() {
                 <div className="text-xs text-[var(--muted-foreground)] mb-1 font-medium">
                   AI 总结
                 </div>
-                <p className="text-[13px]">{latestReview.aiSummary}</p>
+                <p className="text-[13px]">{todayReview.aiSummary}</p>
               </div>
-              {latestReview.strengths && (
+              {todayReview.strengths && (
                 <div>
                   <div className="text-xs text-[var(--muted-foreground)] mb-1 font-medium">
                     优势
                   </div>
-                  <p className="text-[13px]">{latestReview.strengths}</p>
+                  <p className="text-[13px]">{todayReview.strengths}</p>
                 </div>
               )}
-              {latestReview.problems && (
+              {todayReview.problems && (
                 <div>
                   <div className="text-xs text-[var(--muted-foreground)] mb-1 font-medium">
                     问题
                   </div>
-                  <p className="text-[13px]">{latestReview.problems}</p>
+                  <p className="text-[13px]">{todayReview.problems}</p>
                 </div>
               )}
-              {latestReview.suggestion && (
+              {todayReview.suggestion && (
                 <div>
                   <div className="text-xs text-[var(--muted-foreground)] mb-1 font-medium">
                     明日建议
                   </div>
-                  <p className="text-[13px]">{latestReview.suggestion}</p>
+                  <p className="text-[13px]">{todayReview.suggestion}</p>
                 </div>
               )}
             </div>
@@ -129,16 +132,15 @@ export default async function DailyReviewPage() {
           </div>
         )}
 
-        <button className="btn btn-secondary text-sm w-full mt-5 gap-2">
-          <RefreshCw size={14} />
-          生成本日复盘
-        </button>
+        <GenerateReviewButton />
       </div>
 
-      {reviews.length > 1 && (
+      <ReviewQueue />
+
+      {historyReviews.length > 0 && (
         <div className="space-y-2">
           <h2 className="text-sm font-semibold px-1">历史复盘</h2>
-          {reviews.slice(1).map((r) => (
+          {historyReviews.map((r) => (
             <div key={r.id} className="card p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-[var(--muted-foreground)]">

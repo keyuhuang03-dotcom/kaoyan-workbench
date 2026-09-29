@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { Sparkles, Loader2 } from "lucide-react";
+import { Sparkles, Loader2, Trash2 } from "lucide-react";
 
 interface MistakeItem {
   id: string;
@@ -17,13 +17,20 @@ interface MistakeItem {
   knowledgeNode?: { name: string } | null;
 }
 
-export default function QuestionCard({ mistake }: { mistake: MistakeItem }) {
+export default function QuestionCard({
+  mistake,
+  onDelete,
+}: {
+  mistake: MistakeItem;
+  onDelete?: (id: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [status, setStatus] = useState(mistake.reviewStatus);
   const [aiResult, setAiResult] = useState<{
     nodes?: { id: string; name: string; subject: string }[];
   } | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const statusLabels: Record<string, string> = {
     pending: "待复习",
@@ -47,6 +54,19 @@ export default function QuestionCard({ mistake }: { mistake: MistakeItem }) {
       console.error("AI analyze failed:", err);
     }
     setAnalyzing(false);
+  };
+
+  const handleDelete = async () => {
+    if (deleting || !confirm("确定删除这道错题？删除后无法恢复。")) return;
+    setDeleting(true);
+    try {
+      const response = await fetch(`/api/mistakes/${mistake.id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("删除错题失败");
+      onDelete?.(mistake.id);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "删除错题失败，请重试");
+      setDeleting(false);
+    }
   };
 
   return (
@@ -112,6 +132,16 @@ export default function QuestionCard({ mistake }: { mistake: MistakeItem }) {
               </option>
             ))}
           </select>
+
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-red-50 text-[var(--muted-foreground)] hover:text-red-500 transition-colors touch-manipulation"
+            title="删除"
+            aria-label={`删除错题：${mistake.title}`}
+          >
+            {deleting ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} strokeWidth={1.5} />}
+          </button>
         </div>
       </div>
 

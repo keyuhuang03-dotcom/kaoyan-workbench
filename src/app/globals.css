@@ -125,10 +125,10 @@ body {
   padding-bottom: var(--safe-bottom);
 }
 
-/* Mobile touch-friendly */
+/* Mobile: contain vis-network canvas to its parent */
 @media (max-width: 767px) {
-  .card {
-    border-radius: 10px;
+  .vis-network {
+    contain: strict;
   }
 }
 
@@ -163,4 +163,40 @@ body {
 @keyframes slideIn {
   from { transform: translateX(-100%); }
   to   { transform: translateX(0); }
+}
+
+/* Knowledge graph: a quiet canvas that keeps dense maps readable */
+.knowledge-graph-canvas {
+  background-color: #fbfcff;
+  background-image:
+    radial-gradient(circle at 18% 12%, rgba(99, 102, 241, 0.09), transparent 28%),
+    radial-gradient(circle at 86% 82%, rgba(14, 165, 233, 0.07), transparent 28%),
+    radial-gradient(rgba(148, 163, 184, 0.26) 0.75px, transparent 0.75px);
+  background-size: auto, auto, 22px 22px;
+}
+
+.knowledge-graph-canvas .vis-network:focus,
+.knowledge-graph-canvas canvas:focus {
+  outline: none;
+}
+
+.knowledge-graph-canvas .vis-navigation .vis-button {
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+  border-radius: 11px !important;
+  background-color: rgba(255, 255, 255, 0.86) !important;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.08) !important;
+  backdrop-filter: blur(10px);
+}
+
+.knowledge-graph-canvas .vis-tooltip {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+  color: #334155 !important;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12) !important;
+  padding: 8px 10px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  line-height: 1.6 !important;
+  backdrop-filter: blur(10px);
 }

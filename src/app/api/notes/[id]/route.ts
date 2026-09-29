@@ -6,10 +6,20 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const { title, content, tags } = await req.json();
+  const { title, content, tags, knowledgeNodeIds } = await req.json();
+
+  // If knowledgeNodeIds provided, set the connections (replace all)
   const note = await prisma.note.update({
     where: { id },
-    data: { title, content, tags },
+    data: {
+      ...(title !== undefined && { title }),
+      ...(content !== undefined && { content }),
+      ...(tags !== undefined && { tags }),
+      ...(knowledgeNodeIds !== undefined && {
+        knowledgeNodes: { set: knowledgeNodeIds.map((kid: string) => ({ id: kid })) },
+      }),
+    },
+    include: { knowledgeNodes: { select: { id: true, name: true } } },
   });
   return NextResponse.json(note);
 }

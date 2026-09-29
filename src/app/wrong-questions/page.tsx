@@ -13,7 +13,7 @@ interface MistakeItemData {
   aiAnalysis?: string | null;
   relatedKnowledge?: string | null;
   reviewStatus: string;
-  subject?: { name: string } | null;
+  subject?: { name: string; id?: string } | null;
   knowledgeNode?: { name: string } | null;
 }
 
@@ -36,62 +36,45 @@ export default function WrongQuestionsPage() {
   const [saving, setSaving] = useState(false);
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
 
+  // AI suggested tags with node IDs
+  const [aiTags, setAiTags] = useState<{ id: string; name: string; subject: string }[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [aiNewNodes, setAiNewNodes] = useState<{ name: string; subject: string }[]>([]);
+
   useEffect(() => {
     fetchMistakes();
-    fetch("/api/knowledge").then(r => r.json()).then(data => {
-      // Extract unique subjects
-      const subs: Record<string, string> = {};
-      for (const n of data.nodes || []) {
-        if (!subs[n.group]) subs[n.group] = n.id;
-      }
-      // Also fetch subjects directly
-    });
+    fetchSubjects();
   }, []);
 
-  useEffect(() => {
-    // Fetch subjects from the mistakes API or directly
-    fetch("/api/knowledge").then(r => r.json()).then(data => {
-      const subMap = new Map<string, string>();
-      for (const n of data.nodes || []) {
-        if (!subMap.has(n.group)) {
-          subMap.set(n.group, n.id);
-        }
-      }
-      // We need actual subject objects. Let's create from the knowledge graph
-      // Actually, the mistakes API returns subject info, let's get unique subjects from mistakes
-    });
-  }, []);
-
-  const fetchMistakes = async () => {
+  async function fetchSubjects() {
     try {
-      // We need to refetch from API since this is now a client component
+      const fixedSubjects: Subject[] = [
+        { id: "math", name: "数学" },
+        { id: "english", name: "英语" },
+        { id: "cs", name: "408" },
+        { id: "politics", name: "政治" },
+      ];
+      setSubjects(fixedSubjects);
+      setSubjectId(fixedSubjects[0]?.id || "");
+    } catch (err) {
+      console.error("Failed to fetch subjects:", err);
+    }
+  }
+
+  async function fetchMistakes() {
+    try {
       const res = await fetch("/api/mistakes");
       const data = await res.json();
       setMistakes(data);
-
-      // Extract unique subjects
-      const subSet = new Map<string, { id: string; name: string }>();
-      for (const m of data) {
-        if (m.subject && !subSet.has(m.subject.name)) {
-          subSet.set(m.subject.name, { id: m.subject.id || m.subject.name, name: m.subject.name });
-        }
-      }
-      if (subSet.size === 0) {
-        // Fallback subjects
-        subSet.set("数学", { id: "数学", name: "数学" });
-        subSet.set("英语", { id: "英语", name: "英语" });
-        subSet.set("408", { id: "408", name: "408" });
-        subSet.set("政治", { id: "政治", name: "政治" });
-      }
-      setSubjects(Array.from(subSet.values()));
     } catch (err) {
       console.error("Failed to fetch mistakes:", err);
     }
     setLoading(false);
-  };
+  }
 
   const handleAiAnalyze = async () => {
-    if (!title.trim() || !content.trim()) return;
+    if (!title.trim() && !content.trim()) return;
     setAiAnalyzing(true);
     try {
       const res = await fetch("/api/ai/categorize", {
@@ -102,12 +85,22 @@ export default function WrongQuestionsPage() {
       const data = await res.json();
 
       if (data.nodes && data.nodes.length > 0) {
-        // Auto-detect subject from first match
+        // Store full node info (id, name, subject)
+        setAiTags(data.nodes.map((n: { id: string; name: string; subject: string }) => ({
+          id: n.id, name: n.name, subject: n.subject,
+        })));
+        // Auto-select all matched tags
+        const names = data.nodes.map((n: { name: string }) => n.name);
+        const ids = data.nodes.map((n: { id: string }) => n.id);
+        setSelectedTags(names);
+        setSelectedNodeIds(ids);
+        // Auto-detect subject
         const first = data.nodes[0];
-        const matchedSubject = subjects.find(s => s.name === first.subject);
-        if (matchedSubject) {
-          setSubjectId(matchedSubject.id);
-        }
+        const matched = subjects.find((s) => s.name === first.subject);
+        if (matched) setSubjectId(matched.id);
+      }
+      if (data.newNodes && data.newNodes.length > 0) {
+        setAiNewNodes(data.newNodes);
       }
     } catch (err) {
       console.error("AI analyze failed:", err);
@@ -125,13 +118,19 @@ export default function WrongQuestionsPage() {
         body: JSON.stringify({
           title: title.trim(),
           content: content.trim(),
-          subjectId: subjectId || subjects[0]?.id || "408",
+          subjectId: subjectId || subjects[0]?.id || "math",
+          knowledgeNodeId: selectedNodeIds[0] || null,
+          relatedKnowledge: selectedTags.join(", ") || null,
         }),
       });
       if (res.ok) {
         setTitle("");
         setContent("");
-        setSubjectId("");
+        setSubjectId(subjects[0]?.id || "");
+        setAiTags([]);
+        setSelectedTags([]);
+        setSelectedNodeIds([]);
+        setAiNewNodes([]);
         setShowForm(false);
         await fetchMistakes();
       }
@@ -142,9 +141,10 @@ export default function WrongQuestionsPage() {
   };
 
   const filteredMistakes = searchQuery
-    ? mistakes.filter(m =>
-        m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.content.toLowerCase().includes(searchQuery.toLowerCase())
+    ? mistakes.filter(
+        (m) =>
+          m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          m.content.toLowerCase().includes(searchQuery.toLowerCase())
       )
     : mistakes;
 
@@ -186,41 +186,84 @@ export default function WrongQuestionsPage() {
             </div>
 
             <div className="flex-1 p-4 space-y-4 overflow-y-auto">
-              {/* Title */}
               <div>
                 <label className="text-xs text-[var(--muted-foreground)] mb-1 block">题目</label>
                 <input
-                  type="text" value={title} onChange={e => setTitle(e.target.value)}
+                  type="text" value={title} onChange={(e) => setTitle(e.target.value)}
                   placeholder="简短描述这道错题"
                   className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)]"
                 />
               </div>
 
-              {/* Content */}
               <div>
                 <label className="text-xs text-[var(--muted-foreground)] mb-1 block">题目内容 / 错误记录</label>
                 <textarea
-                  value={content} onChange={e => setContent(e.target.value)}
+                  value={content} onChange={(e) => setContent(e.target.value)}
                   placeholder="详细记录题目内容或你的错误过程..."
                   rows={6}
                   className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] resize-none"
                 />
               </div>
 
-              {/* Subject */}
               <div>
                 <label className="text-xs text-[var(--muted-foreground)] mb-1 block">科目</label>
                 <select
                   value={subjectId}
-                  onChange={e => setSubjectId(e.target.value)}
+                  onChange={(e) => setSubjectId(e.target.value)}
                   className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] min-h-[40px]"
                 >
-                  <option value="">选择科目</option>
-                  {subjects.map(s => (
+                  {subjects.map((s) => (
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
               </div>
+
+              {/* AI suggested tags */}
+              {aiTags.length > 0 && (
+                <div>
+                  <label className="text-xs text-[var(--muted-foreground)] mb-1.5 block">AI 识别的知识点</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {aiTags.map((tag) => {
+                      const isSelected = selectedTags.includes(tag.name);
+                      return (
+                        <button
+                          key={tag.id}
+                          onClick={() => {
+                            if (isSelected) {
+                              setSelectedTags(prev => prev.filter(t => t !== tag.name));
+                              setSelectedNodeIds(prev => prev.filter(id => id !== tag.id));
+                            } else {
+                              setSelectedTags(prev => [...prev, tag.name]);
+                              setSelectedNodeIds(prev => [...prev, tag.id]);
+                            }
+                          }}
+                          className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
+                            isSelected
+                              ? "bg-[var(--accent)] text-[var(--accent-foreground)]"
+                              : "bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-[var(--card)]"
+                          }`}
+                        >
+                          {tag.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* AI 新建的知识点 */}
+              {aiNewNodes.length > 0 && (
+                <div className="mt-3 p-3 rounded-lg bg-green-50 border border-green-100">
+                  <p className="text-xs text-green-700 mb-1.5">✅ 已自动添加到知识图谱：</p>
+                  <div className="flex flex-wrap gap-1">
+                    {aiNewNodes.map((n, i) => (
+                      <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+                        {n.name}（{n.subject}）
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Footer */}
@@ -228,7 +271,7 @@ export default function WrongQuestionsPage() {
               <button
                 onClick={handleAiAnalyze}
                 disabled={aiAnalyzing || !title.trim() || !content.trim()}
-                className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors touch-manipulation"
+                className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors touch-manipulation disabled:opacity-50"
               >
                 {aiAnalyzing ? (
                   <Loader2 size={14} className="animate-spin" />
@@ -268,7 +311,11 @@ export default function WrongQuestionsPage() {
       ) : (
         <div className="space-y-2 md:space-y-3">
           {filteredMistakes.map((m) => (
-            <QuestionCard key={m.id} mistake={m} />
+            <QuestionCard
+              key={m.id}
+              mistake={m}
+              onDelete={(id) => setMistakes((prev) => prev.filter((mm) => mm.id !== id))}
+            />
           ))}
         </div>
       )}

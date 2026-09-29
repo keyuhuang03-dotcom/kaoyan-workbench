@@ -76,9 +76,10 @@ export async function analyzeMistake(content: string) {
 }
 
 export async function generateDailyReview(data: {
-  subjects: { name: string; hours: number }[];
-  taskCompletion: string;
-  streak: number;
+  subjects: { name: string; minutes: number }[];
+  tasks: { total: number; completed: number };
+  mistakes: { title: string; errorReason: string | null }[];
+  reviewedNodes: { name: string; masteryLevel: number }[];
 }) {
   const client = getClient();
   const response = await client.chat.completions.create({

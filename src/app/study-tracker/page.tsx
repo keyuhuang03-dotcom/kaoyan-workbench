@@ -34,15 +34,15 @@ export default function StudyTrackerPage() {
     fetchSubjects();
   }, []);
 
-  const fetchData = async () => {
+  async function fetchData() {
     const res = await fetch("/api/study-sessions");
     const data = await res.json();
     setTodaySessions(data.today || []);
     setRecentSessions(data.recent || []);
     setLoading(false);
-  };
+  }
 
-  const fetchSubjects = async () => {
+  async function fetchSubjects() {
     const res = await fetch("/api/knowledge");
     const data = await res.json();
     const subMap = new Map<string, Subject>();
@@ -58,7 +58,7 @@ export default function StudyTrackerPage() {
       subMap.set("政治", { id: "政治", name: "政治" });
     }
     setSubjects(Array.from(subMap.values()));
-  };
+  }
 
   const handleAdd = async () => {
     const totalMinutes = (parseInt(hours) || 0) * 60 + (parseInt(minutes) || 0);

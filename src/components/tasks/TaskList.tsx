@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 
 interface Task {
   id: string;
@@ -11,10 +11,17 @@ interface Task {
   subject?: { name: string; color: string } | null;
 }
 
+function priorityDotClass(priority: number) {
+  if (priority >= 2) return "bg-red-500";
+  if (priority === 1) return "bg-yellow-400";
+  return "bg-green-500";
+}
+
 export default function TaskList({ tasks: initialTasks }: { tasks: Task[] }) {
   const [taskList, setTaskList] = useState(initialTasks);
   const [newTitle, setNewTitle] = useState("");
   const [newPriority, setNewPriority] = useState(0);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const toggleTask = async (id: string) => {
     setTaskList((prev) =>
@@ -40,6 +47,20 @@ export default function TaskList({ tasks: initialTasks }: { tasks: Task[] }) {
     setTaskList((prev) => [...prev, task]);
     setNewTitle("");
     setNewPriority(0);
+  };
+
+  const deleteTask = async (id: string) => {
+    if (deletingId || !confirm("确定删除这个任务？")) return;
+    setDeletingId(id);
+    try {
+      const response = await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("删除任务失败");
+      setTaskList((prev) => prev.filter((task) => task.id !== id));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "删除任务失败，请重试");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const pending = taskList.filter((t) => !t.completed);
@@ -83,22 +104,27 @@ export default function TaskList({ tasks: initialTasks }: { tasks: Task[] }) {
           {pending.length} 个待完成
         </div>
         {pending.map((task) => (
-          <button
+          <div
             key={task.id}
-            onClick={() => toggleTask(task.id)}
-            className="w-full card p-3 md:p-3.5 flex items-center gap-3 text-left touch-manipulation min-h-[48px]"
+            className="w-full card p-2 md:p-2.5 flex items-center gap-1 text-left min-h-[52px] group"
           >
-            <div className="w-5 h-5 rounded-full border-2 border-[var(--card-border)] flex-shrink-0" />
-            <span className="flex-1 text-sm truncate">{task.title}</span>
-            {task.subject && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--muted)] text-[var(--muted-foreground)] flex-shrink-0">
-                {task.subject.name}
-              </span>
-            )}
-            {task.priority > 0 && (
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
-            )}
-          </button>
+            <button onClick={() => toggleTask(task.id)} className="flex flex-1 min-w-0 items-center gap-3 p-1 text-left touch-manipulation">
+              <span className="w-5 h-5 rounded-full border-2 border-[var(--card-border)] flex-shrink-0" />
+              <span
+                className={`w-2 h-2 rounded-full flex-shrink-0 ${priorityDotClass(task.priority)}`}
+                aria-label={task.priority >= 2 ? "紧急" : task.priority === 1 ? "重要" : "普通"}
+              />
+              <span className="flex-1 text-sm truncate">{task.title}</span>
+              {task.subject && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--muted)] text-[var(--muted-foreground)] flex-shrink-0">
+                  {task.subject.name}
+                </span>
+              )}
+            </button>
+            <button onClick={() => deleteTask(task.id)} disabled={deletingId === task.id} className="w-10 h-10 flex items-center justify-center rounded-xl text-[var(--muted-foreground)] hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 transition-all touch-manipulation" aria-label={`删除任务：${task.title}`}>
+              {deletingId === task.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            </button>
+          </div>
         ))}
       </div>
 
@@ -109,12 +135,12 @@ export default function TaskList({ tasks: initialTasks }: { tasks: Task[] }) {
             已完成
           </div>
           {done.map((task) => (
-            <button
+            <div
               key={task.id}
-              onClick={() => toggleTask(task.id)}
-              className="w-full card p-3 md:p-3.5 flex items-center gap-3 text-left touch-manipulation opacity-40 min-h-[48px]"
+              className="w-full card p-2 md:p-2.5 flex items-center gap-1 text-left opacity-50 min-h-[52px] group"
             >
-              <div className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center flex-shrink-0">
+              <button onClick={() => toggleTask(task.id)} className="flex flex-1 min-w-0 items-center gap-3 p-1 text-left touch-manipulation">
+              <span className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center flex-shrink-0">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                   <path
                     d="M2.5 6L5 8.5L9.5 3.5"
@@ -124,11 +150,16 @@ export default function TaskList({ tasks: initialTasks }: { tasks: Task[] }) {
                     strokeLinejoin="round"
                   />
                 </svg>
-              </div>
+              </span>
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${priorityDotClass(task.priority)}`} />
               <span className="flex-1 text-sm line-through truncate">
                 {task.title}
               </span>
-            </button>
+              </button>
+              <button onClick={() => deleteTask(task.id)} disabled={deletingId === task.id} className="w-10 h-10 flex items-center justify-center rounded-xl text-[var(--muted-foreground)] hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 transition-all touch-manipulation" aria-label={`删除任务：${task.title}`}>
+                {deletingId === task.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+              </button>
+            </div>
           ))}
         </div>
       )}

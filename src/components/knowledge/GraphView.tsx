@@ -1,40 +1,77 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Network, DataSet } from "vis-network/standalone";
+import type { Edge as VisEdge } from "vis-network";
 import "vis-network/styles/vis-network.css";
 import {
-  GitGraph, X, Search, Save, BookOpen,
-  FileText, Loader2, Star, AlertTriangle, Plus,
-  Edit3, Link2, Sparkles,
+  Search, GitGraph, ListTree, X, Star,
+  BookOpen, AlertTriangle, Sparkles, Edit3, Loader2, Plus, Trash2,
+  Focus, RotateCcw,
 } from "lucide-react";
 
 // ===== Types =====
 interface RelatedMistake { id: string; title: string; reviewStatus: string; }
 interface RelatedNote { id: string; title: string; }
+interface RelatedRelation {
+  id: string;
+  nodeId: string;
+  nodeName: string;
+  label: string;
+  direction: "outgoing" | "incoming";
+}
 interface KnowledgeNodeData {
-  id: string; label: string; level: number; group: string;
+  id: string; label: string; level: number; depth: number;
+  group: string; subjectId: string;
   status: string; tags: string | null;
   pageStart: number | null; pageEnd: number | null;
   description: string | null; lastReviewAt: string | null;
+  nextReviewAt: string | null;
   chapterName: string | null;
+  mistakeCount: number;
   relatedMistakes: RelatedMistake[];
   relatedNotes: RelatedNote[];
+  relatedRelations: RelatedRelation[];
 }
 
-// ===== Status helpers =====
+interface AiCandidate {
+  name: string;
+  subject: string;
+  notes: string;
+  parent: string;
+  related: string[];
+  existingId: string | null;
+  selected: boolean;
+}
+
+interface EdgeData {
+  id?: string; from: string; to: string; type: string; label?: string | null;
+}
+
+// ===== Status config =====
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
-  unlearned:        { label: "未学习",   color: "#e8e3db", bg: "#f5f2ec" },
-  learning:         { label: "学习中",   color: "#bcc8d4", bg: "#eef2f6" },
-  mastered:         { label: "已掌握",   color: "#a8bfb4", bg: "#eaf0ed" },
-  keypoint:         { label: "重点知识", color: "#c0b8cc", bg: "#f0eef4" },
-  frequent_mistake: { label: "高频错题", color: "#d4c4b8", bg: "#f7f2ee" },
+  unlearned:        { label: "未学习",   color: "#9ca3af", bg: "#f3f4f6" },
+  learning:         { label: "学习中",   color: "#60a5fa", bg: "#eff6ff" },
+  mastered:         { label: "已掌握",   color: "#34d399", bg: "#ecfdf5" },
+  keypoint:         { label: "重点知识", color: "#fbbf24", bg: "#fffbeb" },
+  frequent_mistake: { label: "高频错题", color: "#f87171", bg: "#fef2f2" },
 };
 
-// Mastery star colors
-function getNodeColor(level: number): string {
-  const colors = ["#e8e3db", "#cdd5ce", "#bcc8d4", "#a8b5c4", "#c0b8cc", "#a8bfb4"];
-  return colors[Math.min(level, 5)] || colors[0];
+const depthSizes = [40, 32, 26, 20, 16];
+
+const subjectColors: Record<string, string> = {
+  "数学": "#6366f1",
+  "英语": "#0ea5e9",
+  "政治": "#f43f5e",
+  "408": "#8b5cf6",
+};
+
+function getNodeColor(status: string): string {
+  return statusConfig[status]?.color || "#9ca3af";
+}
+
+function getNodeBg(status: string): string {
+  return statusConfig[status]?.bg || "#f3f4f6";
 }
 
 // ===== Component =====
@@ -42,139 +79,297 @@ export default function GraphView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<Network | null>(null);
   const [allNodes, setAllNodes] = useState<KnowledgeNodeData[]>([]);
-  const [allEdges, setAllEdges] = useState<{ from: string; to: string }[]>([]);
+  const [allEdges, setAllEdges] = useState<EdgeData[]>([]);
   const [selectedNode, setSelectedNode] = useState<KnowledgeNodeData | null>(null);
   const [loading, setLoading] = useState(true);
   const [showPanel, setShowPanel] = useState(false);
+  const [viewMode, setViewMode] = useState<"graph" | "tree" | "timeline">("graph");
 
-  // Edit modal state
+  // Top bar state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [subjectFilter, setSubjectFilter] = useState("all");
+  const [searchResults, setSearchResults] = useState<KnowledgeNodeData[]>([]);
+
+  // Edit modal
   const [editingNode, setEditingNode] = useState<KnowledgeNodeData | null>(null);
   const [editName, setEditName] = useState("");
   const [editLevel, setEditLevel] = useState(0);
   const [editStatus, setEditStatus] = useState("unlearned");
-  const [editPageStart, setEditPageStart] = useState("");
-  const [editPageEnd, setEditPageEnd] = useState("");
   const [editDescription, setEditDescription] = useState("");
-  const [editTags, setEditTags] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Inline description editing
-  const [editingDescription, setEditingDescription] = useState(false);
-  const [inlineDesc, setInlineDesc] = useState("");
+  // AI
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiResult, setAiResult] = useState("");
+  const [relationTargetId, setRelationTargetId] = useState("");
+  const [relationLabel, setRelationLabel] = useState("related");
+  const [relationSaving, setRelationSaving] = useState(false);
+  const [relationError, setRelationError] = useState("");
+  const [graphReady, setGraphReady] = useState(false);
 
-  // Search
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<KnowledgeNodeData[]>([]);
-
-  // Subject filter
-  const [subjectFilter, setSubjectFilter] = useState("all");
-  const subjects = [...new Set(allNodes.map((n) => n.group))];
-
-  // Link note
-  const [showLinkNote, setShowLinkNote] = useState(false);
-  const [availableNotes, setAvailableNotes] = useState<RelatedNote[]>([]);
-  const [linkLoading, setLinkLoading] = useState(false);
-
-  // New node modal
-  const [showNewNode, setShowNewNode] = useState(false);
-  const [newNodeMode, setNewNodeMode] = useState<"manual" | "ai">("manual");
-  const [newName, setNewName] = useState("");
-  const [newSubject, setNewSubject] = useState("");
-  const [newParentId, setNewParentId] = useState("");
-  const [newLevel, setNewLevel] = useState(0);
-  const [newStatus, setNewStatus] = useState("unlearned");
+  // AI add node
+  const [showAiAdd, setShowAiAdd] = useState(false);
   const [aiInput, setAiInput] = useState("");
   const [aiExtracting, setAiExtracting] = useState(false);
-  const [aiPreview, setAiPreview] = useState<{ name: string; subject: string; notes: string }[]>([]);
-  const [newNodeSaving, setNewNodeSaving] = useState(false);
+  const [aiPreview, setAiPreview] = useState<AiCandidate[]>([]);
+  const [aiAdded, setAiAdded] = useState(0);
+  const [aiError, setAiError] = useState("");
+
+  // ===== AI extract new nodes =====
+  const handleAiExtract = async () => {
+    if (!aiInput.trim()) return;
+    setAiExtracting(true);
+    setAiPreview([]);
+    setAiAdded(0);
+    setAiError("");
+    try {
+      const res = await fetch("/api/ai/extract-knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: aiInput }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "AI 提取失败");
+      if (data.nodes && data.nodes.length > 0) {
+        setAiPreview(data.nodes.map((node: Omit<AiCandidate, "selected">) => ({
+          ...node,
+          selected: !node.existingId,
+        })));
+      }
+    } catch (error) {
+      setAiError(error instanceof Error ? error.message : "AI 提取失败");
+    }
+    setAiExtracting(false);
+  };
+
+  const handleAddAiNodes = async () => {
+    let added = 0;
+    setAiError("");
+    for (const node of aiPreview.filter((candidate) => candidate.selected && !candidate.existingId)) {
+      try {
+        const response = await fetch("/api/knowledge/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: node.name,
+            subject: node.subject,
+            description: node.notes,
+            parentName: node.parent,
+            relatedNames: node.related,
+            status: "unlearned",
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "添加失败");
+        if (result.created) added++;
+      } catch (error) {
+        setAiError(error instanceof Error ? error.message : "部分知识点添加失败");
+      }
+    }
+    setAiAdded(added);
+    if (added > 0) {
+      setAiPreview([]);
+      setAiInput("");
+      await fetchGraph();
+    }
+  };
 
   // ===== Data loading =====
-  useEffect(() => { fetchGraph(); }, []);
-
-  // Rebuild graph when subject filter changes
-  useEffect(() => {
-    if (allNodes.length === 0) return;
-    const filtered = allNodes.filter(n => subjectFilter === "all" || n.group === subjectFilter);
-    buildGraph(filtered);
-  }, [subjectFilter]);
-
-  const fetchGraph = async () => {
+  async function fetchGraph() {
     try {
       const res = await fetch("/api/knowledge");
       const data = await res.json();
-      setAllNodes(data.nodes || []);
-      setAllEdges(data.edges || []);
-      const filtered = data.nodes?.filter((n: KnowledgeNodeData) => subjectFilter === "all" || n.group === subjectFilter) || [];
-      buildGraph(filtered);
+      const nodes: KnowledgeNodeData[] = data.nodes || [];
+      const edges: EdgeData[] = data.edges || [];
+      setAllNodes(nodes);
+      setAllEdges(edges);
+      buildGraph(nodes, edges);
     } catch (err) { console.error(err); setLoading(false); }
-  };
+  }
 
-  const buildGraph = (filteredNodes: KnowledgeNodeData[]) => {
+  const buildGraph = useCallback((nodes: KnowledgeNodeData[], edges: EdgeData[]) => {
     if (!containerRef.current) { setLoading(false); return; }
     if (networkRef.current) networkRef.current.destroy();
 
-    if (!filteredNodes.length) { setLoading(false); return; }
+    if (!nodes.length) { setLoading(false); return; }
 
-    const nodeIds = new Set(filteredNodes.map(n => n.id));
-    const filteredEdges = allEdges.filter(e => nodeIds.has(e.from) && nodeIds.has(e.to));
+    // Filter by subject and status
+    let filtered = subjectFilter === "all"
+      ? nodes
+      : nodes.filter((n) => n.group === subjectFilter);
 
+    filtered = statusFilter === "all"
+      ? filtered
+      : filtered.filter((n) => n.status === statusFilter);
+
+    const nodeIds = new Set(filtered.map((n) => n.id));
+    const filteredEdges = edges.filter(
+      (e) => nodeIds.has(e.from) && nodeIds.has(e.to)
+    );
+
+    setGraphReady(false);
     const visNodes = new DataSet(
-      filteredNodes.map((n: KnowledgeNodeData) => ({
-        id: n.id, label: n.label, group: n.group,
-        value: (n.level + 1) * 10,
-        font: { size: 12, face: "SF Pro Display, -apple-system, sans-serif",
-          color: getComputedStyle(document.documentElement).getPropertyValue("--foreground").trim() },
-        color: {
-          background: getNodeColor(n.level),
-          border: n.status === "keypoint" || n.status === "frequent_mistake" ? getNodeColor(n.level) : "transparent",
-          highlight: { background: getNodeColor(Math.min(n.level + 1, 5)), border: "transparent" },
-        },
-        borderWidth: n.status === "keypoint" ? 3 : n.status === "frequent_mistake" ? 2 : 0,
+      filtered.map((n: KnowledgeNodeData) => {
+        const size = depthSizes[Math.min(n.depth, depthSizes.length - 1)];
+        const statusColor = getNodeColor(n.status);
+        return {
+          id: n.id,
+          label: n.label,
+          group: n.group,
+          size,
+          font: {
+            size: Math.max(11, 15 - n.depth),
+            face: "SF Pro Display, -apple-system, sans-serif",
+            color: "#1f2937",
+            multi: false,
+          },
+          color: {
+            background: getNodeBg(n.status),
+            border: statusColor,
+            hover: { background: "#ffffff", border: statusColor },
+            highlight: { background: "#ffffff", border: statusColor },
+          },
+          borderWidth: n.status === "keypoint" || n.status === "frequent_mistake" ? 2.5 : 1.5,
+          borderWidthSelected: 4,
+          shape: "box",
+          margin: { top: 10, right: 14, bottom: 10, left: 14 },
+          shadow: { enabled: true, color: "rgba(15, 23, 42, 0.10)", size: 10, x: 0, y: 4 },
+          shapeProperties: { borderRadius: 12 },
+          title: `${n.label}\n${"★".repeat(n.level)}${"☆".repeat(5 - n.level)}\n${statusConfig[n.status]?.label || n.status}\n错题: ${n.mistakeCount}`,
+        };
+      })
+    );
+
+    const visEdges = new DataSet<VisEdge>(
+      filteredEdges.map((e) => ({
+        from: e.from,
+        to: e.to,
+        color: e.type === "weak" ? { color: "#fb7185", opacity: 0.75, highlight: "#f43f5e", hover: "#f43f5e" }
+              : e.type === "related" ? { color: "#94a3b8", opacity: 0.35, highlight: "#64748b", hover: "#64748b" }
+              : { color: "#a5b4fc", opacity: 0.55, highlight: "#6366f1", hover: "#6366f1" },
+        width: e.type === "weak" ? 2.5 : 1.25,
+        dashes: e.type === "related" ? [4, 4] : false,
+        smooth: { enabled: true, type: "continuous", roundness: 0.5 },
       }))
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const visEdges = new DataSet(
-      (filteredEdges.map((e) => ({ from: e.from, to: e.to, color: { color: "#c4bfb4", opacity: 0.5 }, width: 1, smooth: { type: "continuous" } })) as any)
-    );
-
-    const isMobile = window.innerWidth < 768;
     const options = {
       physics: {
-        forceAtlas2Based: { gravitationalConstant: -40, centralGravity: 0.005, springLength: isMobile ? 120 : 180, springConstant: 0.08 },
-        maxVelocity: 30, solver: "forceAtlas2Based" as const, stabilization: { iterations: 200 },
+        forceAtlas2Based: {
+          gravitationalConstant: -50,
+          centralGravity: 0.01,
+          springLength: 150,
+          springConstant: 0.05,
+          damping: 0.4,
+        },
+        maxVelocity: 20,
+        solver: "forceAtlas2Based" as const,
+        stabilization: { iterations: 150 },
       },
-      interaction: { hover: true, tooltipDelay: 100, zoomView: true, dragView: true },
-      layout: { improvedLayout: true },
+      interaction: {
+        hover: true,
+        tooltipDelay: 200,
+        zoomView: true,
+        dragView: true,
+        navigationButtons: false,
+        keyboard: { enabled: window.innerWidth >= 768 },
+      },
+      layout: { improvedLayout: true, hierarchical: viewMode === "tree" ? { enabled: true, direction: "UD" as const, sortMethod: "directed" as const } : false },
+      edges: { arrows: { to: { enabled: viewMode === "tree", scaleFactor: 0.5 } } },
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const network = new Network(containerRef.current, { nodes: visNodes as any, edges: visEdges as any }, options);
+    const network = new Network(
+      containerRef.current,
+      { nodes: visNodes, edges: visEdges },
+      options
+    );
 
-    network.on("click", (p) => {
+    network.on("click", (p: { nodes: string[] }) => {
       if (p.nodes.length > 0) {
-        const node = filteredNodes.find((n) => n.id === p.nodes[0]);
-        setSelectedNode(node || null); setShowPanel(true);
+        const node = filtered.find((n) => n.id === p.nodes[0]);
+        setSelectedNode(node || null);
+        setShowPanel(true);
+      } else {
+        setSelectedNode(null);
+        setShowPanel(false);
       }
     });
 
-    network.on("doubleClick", (p) => {
+    network.on("doubleClick", (p: { nodes: string[] }) => {
       if (p.nodes.length > 0) {
-        const node = filteredNodes.find((n) => n.id === p.nodes[0]);
-        if (node) openEditor(node);
+        const node = filtered.find((n) => n.id === p.nodes[0]);
+        if (node) {
+          setEditingNode(node);
+          setEditName(node.label);
+          setEditLevel(node.level);
+          setEditStatus(node.status);
+          setEditDescription(node.description || "");
+        }
+      }
+    });
+
+    network.on("stabilizationIterationsDone", () => {
+      setLoading(false);
+      setGraphReady(true);
+      network.fit({ animation: { duration: 450, easingFunction: "easeInOutQuad" } });
+      if (window.innerWidth < 768) {
+        window.setTimeout(() => {
+          if (networkRef.current !== network) return;
+          try {
+            const currentScale = network.getScale();
+            if (currentScale < 0.68) {
+              network.moveTo({ scale: 0.68, animation: { duration: 300, easingFunction: "easeInOutQuad" } });
+            }
+          } catch {
+            // The graph may have been rebuilt while the fit animation was running.
+          }
+        }, 480);
       }
     });
 
     networkRef.current = network;
-    setLoading(false);
+    setTimeout(() => setLoading(false), 1500);
+  }, [statusFilter, subjectFilter, viewMode]);
+
+  const fitGraph = () => {
+    networkRef.current?.fit({ animation: { duration: 450, easingFunction: "easeInOutQuad" } });
+  };
+
+  useEffect(() => { void fetchGraph(); }, []);
+
+  // Rebuild on filter/view change
+  useEffect(() => {
+    if (allNodes.length === 0) return;
+    buildGraph(allNodes, allEdges);
+  }, [statusFilter, subjectFilter, viewMode, buildGraph, allNodes, allEdges]);
+
+  // ===== Search =====
+  const handleSearch = (q: string) => {
+    setSearchQuery(q);
+    if (!q.trim()) { setSearchResults([]); return; }
+    const results = allNodes.filter(
+      (n) => n.label.toLowerCase().includes(q.toLowerCase())
+    );
+    setSearchResults(results.slice(0, 8));
+  };
+
+  const focusNode = (nodeId: string) => {
+    if (networkRef.current) {
+      networkRef.current.focus(nodeId, { scale: 1.5, animation: true });
+      networkRef.current.selectNodes([nodeId]);
+    }
+    setSearchQuery("");
+    setSearchResults([]);
   };
 
   // ===== Editor =====
   const openEditor = (node: KnowledgeNodeData) => {
-    setEditingNode(node); setEditName(node.label); setEditLevel(node.level);
-    setEditStatus(node.status); setEditPageStart(node.pageStart?.toString() || "");
-    setEditPageEnd(node.pageEnd?.toString() || ""); setEditDescription(node.description || "");
-    setEditTags(node.tags || "");
+    setEditingNode(node);
+    setEditName(node.label);
+    setEditLevel(node.level);
+    setEditStatus(node.status);
+    setEditDescription(node.description || "");
   };
 
   const saveNode = async () => {
@@ -185,702 +380,664 @@ export default function GraphView() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: editName, masteryLevel: editLevel, status: editStatus,
-          pageStart: editPageStart ? parseInt(editPageStart) : null,
-          pageEnd: editPageEnd ? parseInt(editPageEnd) : null,
-          description: editDescription, tags: editTags || null,
+          name: editName,
+          masteryLevel: editLevel,
+          status: editStatus,
+          description: editDescription,
         }),
       });
-      if (res.ok) { setEditingNode(null); setLoading(true); networkRef.current?.destroy(); await fetchGraph(); }
+      if (res.ok) {
+        setEditingNode(null);
+        await fetchGraph();
+        setShowPanel(false);
+      }
     } catch (err) { console.error(err); }
     setSaving(false);
   };
 
-  // Inline description save
-  const saveDescription = async () => {
+  // ===== AI =====
+  const handleAiGenerate = async (mode: "summary" | "advice") => {
     if (!selectedNode) return;
-    await fetch(`/api/knowledge/${selectedNode.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description: inlineDesc }),
-    });
-    setSelectedNode({ ...selectedNode, description: inlineDesc });
-    setEditingDescription(false);
-  };
-
-  // ===== Search =====
-  const handleSearch = (q: string) => {
-    setSearchQuery(q);
-    if (!q.trim()) { setSearchResults([]); return; }
-    const lower = q.toLowerCase();
-    setSearchResults(
-      allNodes.filter(n =>
-        n.label.toLowerCase().includes(lower) ||
-        n.group.toLowerCase().includes(lower) ||
-        (n.tags && n.tags.toLowerCase().includes(lower))
-      ).slice(0, 8)
-    );
-  };
-
-  const focusNode = (nodeId: string) => {
-    networkRef.current?.focus(nodeId, { scale: 1.5, animation: { duration: 500, easingFunction: "easeInOutQuad" } });
-    networkRef.current?.selectNodes([nodeId]);
-    setSearchResults([]); setSearchQuery("");
-  };
-
-  // ===== New node =====
-  const handleAiExtract = async () => {
-    if (!aiInput.trim() || aiExtracting) return;
-    setAiExtracting(true);
+    setAiGenerating(true);
+    setAiResult("");
     try {
-      const analyzeRes = await fetch("/api/ai/extract-knowledge", {
+      const res = await fetch("/api/ai/knowledge-advice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: aiInput }),
+        body: JSON.stringify({ nodeId: selectedNode.id, mode }),
       });
-      const extractData = await analyzeRes.json();
-      if (extractData.nodes && extractData.nodes.length > 0) {
-        setAiPreview(extractData.nodes);
-      }
-    } catch (err) {
-      console.error("AI extract failed:", err);
-    }
-    setAiExtracting(false);
-  };
-
-  const handleAddAiNodes = async () => {
-    if (aiPreview.length === 0 || newNodeSaving) return;
-    setNewNodeSaving(true);
-    try {
-      for (const node of aiPreview) {
-        // Find the subject ID
-        const matchedSubject = subjects.find(s => s === node.subject || subjects.some(sub => sub.toLowerCase() === node.subject?.toLowerCase()))
-          ? node.subject
-          : subjects[0];
-        await fetch("/api/knowledge/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: node.name,
-            subject: matchedSubject,
-            description: node.notes,
-            status: "unlearned",
-            masteryLevel: 0,
-          }),
-        });
-      }
-      setShowNewNode(false);
-      setAiPreview([]);
-      setAiInput("");
-      // Refresh graph
-      const res = await fetch("/api/knowledge");
       const data = await res.json();
-      setAllNodes(data.nodes || []);
-      setAllEdges(data.edges || []);
-      const filtered = data.nodes?.filter((n: KnowledgeNodeData) => subjectFilter === "all" || n.group === subjectFilter) || [];
-      buildGraph(filtered);
-    } catch (err) {
-      console.error("Add AI nodes failed:", err);
+      if (!res.ok) throw new Error(data.error || "AI 分析失败");
+      setAiResult(data.advice || "AI 分析完成");
+    } catch {
+      setAiResult("AI 服务暂时不可用");
     }
-    setNewNodeSaving(false);
+    setAiGenerating(false);
   };
 
-  const handleManualAdd = async () => {
-    if (!newName.trim() || !newSubject || newNodeSaving) return;
-    setNewNodeSaving(true);
+  const relationLabelText: Record<string, string> = {
+    related: "相关",
+    prerequisite: "前置",
+    confusable: "易混淆",
+  };
+
+  async function addRelation() {
+    if (!selectedNode || !relationTargetId || relationSaving) return;
+    setRelationSaving(true);
+    setRelationError("");
     try {
-      await fetch("/api/knowledge/create", {
+      const response = await fetch("/api/knowledge/relations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newName.trim(),
-          subject: newSubject,
-          parentId: newParentId || null,
-          masteryLevel: newLevel,
-          status: newStatus,
-        }),
+        body: JSON.stringify({ sourceId: selectedNode.id, targetId: relationTargetId, label: relationLabel }),
       });
-      setShowNewNode(false);
-      setNewName("");
-      setNewSubject("");
-      setNewParentId("");
-      // Refresh graph
-      const res = await fetch("/api/knowledge");
-      const data = await res.json();
-      setAllNodes(data.nodes || []);
-      setAllEdges(data.edges || []);
-      const filtered = data.nodes?.filter((n: KnowledgeNodeData) => subjectFilter === "all" || n.group === subjectFilter) || [];
-      buildGraph(filtered);
-    } catch (err) {
-      console.error("Add node failed:", err);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "添加失败");
+      const target = allNodes.find((node) => node.id === relationTargetId);
+      if (data.created && target) {
+        setSelectedNode((current) => current ? {
+          ...current,
+          relatedRelations: [...current.relatedRelations, {
+            id: data.relation.id,
+            nodeId: target.id,
+            nodeName: target.label,
+            label: relationLabel,
+            direction: "outgoing",
+          }],
+        } : current);
+        await fetchGraph();
+      }
+      setRelationTargetId("");
+    } catch (error) {
+      setRelationError(error instanceof Error ? error.message : "添加关系失败");
+    } finally {
+      setRelationSaving(false);
     }
-    setNewNodeSaving(false);
-  };
-  const fetchAvailableNotes = async () => {
-    setLinkLoading(true);
-    const res = await fetch("/api/notes");
-    const notes = await res.json();
-    setAvailableNotes(notes);
-    setShowLinkNote(true);
-    setLinkLoading(false);
-  };
+  }
 
-  const linkNote = async (noteId: string) => {
-    if (!selectedNode) return;
-    await fetch(`/api/knowledge/${selectedNode.id}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ noteId }),
-    });
-    // Refresh
-    const res = await fetch("/api/knowledge");
-    const data = await res.json();
-    const updated = data.nodes.find((n: KnowledgeNodeData) => n.id === selectedNode.id);
-    setSelectedNode(updated);
-    setShowLinkNote(false);
-  };
+  async function deleteRelation(relationId: string) {
+    if (relationSaving) return;
+    setRelationSaving(true);
+    setRelationError("");
+    try {
+      const response = await fetch("/api/knowledge/relations", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relationId }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "删除失败");
+      setSelectedNode((current) => current ? {
+        ...current,
+        relatedRelations: current.relatedRelations.filter((relation) => relation.id !== relationId),
+      } : current);
+      await fetchGraph();
+    } catch (error) {
+      setRelationError(error instanceof Error ? error.message : "删除关系失败");
+    } finally {
+      setRelationSaving(false);
+    }
+  }
 
-  const unlinkNote = async (noteId: string) => {
-    if (!selectedNode) return;
-    await fetch(`/api/knowledge/${selectedNode.id}`, {
-      method: "DELETE", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ noteId }),
-    });
-    const res = await fetch("/api/knowledge");
-    const data = await res.json();
-    setSelectedNode(data.nodes.find((n: KnowledgeNodeData) => n.id === selectedNode.id));
-  };
-
-  // ===== Render =====
-  const st = selectedNode && statusConfig[selectedNode.status];
+  // ===== Filters =====
+  const filterOptions = [
+    { value: "all", label: "全部" },
+    { value: "unlearned", label: "未学习" },
+    { value: "learning", label: "学习中" },
+    { value: "mastered", label: "已掌握" },
+    { value: "frequent_mistake", label: "高频错题" },
+    { value: "keypoint", label: "重点" },
+  ];
 
   return (
-    <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4 md:mb-6">
-        <h1 className="text-xl md:text-2xl font-semibold tracking-tight flex items-center gap-2">
-          <GitGraph size={22} strokeWidth={1.5} />知识图谱
-        </h1>
-        <span className="text-[11px] text-[var(--muted-foreground)] hidden md:block">
-          单击查看 · 双击编辑 · 滚轮缩放
-        </span>
-      </div>
+    <div className="flex flex-col h-[calc(100dvh-2rem)] pt-12 md:pt-0 md:h-[calc(100vh-4rem)]">
+      {/* Top Bar */}
+      <div className="shrink-0 space-y-2.5 mb-3 md:mb-4 px-1">
+        {/* Row 1: search + view mode + AI */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              placeholder="搜索知识点..."
+              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-[var(--card)] border border-[var(--card-border)] text-sm outline-none focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 transition-all shadow-sm"
+            />
+            {searchResults.length > 0 && (
+              <div className="absolute top-full mt-1 w-full bg-[var(--card)] border border-[var(--card-border)] rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
+                {searchResults.map((n) => (
+                  <button
+                    key={n.id}
+                    onClick={() => focusNode(n.id)}
+                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-[var(--muted)] transition-colors flex items-center gap-2"
+                  >
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: getNodeColor(n.status) }} />
+                    {n.label}
+                    <span className="text-xs text-[var(--muted-foreground)] ml-auto">{n.group}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
-      {/* Search */}
-      <div className="flex gap-2 mb-4">
-        <div className="relative flex-1">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <input
-            type="text" value={searchQuery}
-            onChange={(e) => handleSearch(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && searchResults.length > 0) focusNode(searchResults[0].id); }}
-            placeholder="搜索知识点..."
-            className="w-full pl-9 pr-4 py-2.5 rounded-lg bg-[var(--card)] border border-[var(--card-border)] text-sm outline-none focus:border-[var(--foreground)] transition-colors min-h-[44px]"
-          />
-          {searchResults.length > 0 && (
-            <div className="absolute top-full mt-1 left-0 right-0 z-30 card shadow-lg max-h-64 overflow-y-auto">
-              {searchResults.map((n) => (
-                <button key={n.id} onClick={() => focusNode(n.id)}
-                  className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-[var(--muted)] transition-colors text-left">
-                  <span>{n.label}</span>
-                  <span className="text-[10px] text-[var(--muted-foreground)]">{n.group}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <button
-          onClick={() => { if (searchResults.length > 0) focusNode(searchResults[0].id); }}
-          className="btn btn-secondary text-sm px-4 flex-shrink-0"
-        >
-          <Search size={16} />
-        </button>
-        <button
-          onClick={() => { setShowNewNode(true); setNewNodeMode("manual"); }}
-          className="btn btn-primary text-sm gap-1.5 flex-shrink-0"
-        >
-          <Plus size={14} />新增
-        </button>
-      </div>
-
-      {/* Subject filter tabs */}
-      {subjects.length > 1 && (
-        <div className="flex gap-1.5 mb-4 overflow-x-auto pb-1">
-          <button
-            onClick={() => setSubjectFilter("all")}
-            className={`text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-colors touch-manipulation flex-shrink-0
-              ${subjectFilter === "all" ? "bg-[var(--accent)] text-[var(--accent-foreground)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]"}`}
-          >
-            全部
-          </button>
-          {subjects.map((sub) => (
+          <div className="flex gap-0.5 bg-[var(--muted)] rounded-xl p-1 flex-shrink-0 border border-[var(--card-border)]">
             <button
-              key={sub}
-              onClick={() => setSubjectFilter(sub)}
-              className={`text-xs px-3 py-1.5 rounded-full whitespace-nowrap transition-colors touch-manipulation flex-shrink-0
-                ${subjectFilter === sub ? "bg-[var(--accent)] text-[var(--accent-foreground)]" : "bg-[var(--muted)] text-[var(--muted-foreground)]"}`}
+              onClick={() => setViewMode("graph")}
+              className={`p-2 rounded-lg transition-all ${viewMode === "graph" ? "bg-[var(--card)] text-indigo-600 shadow-sm" : "text-[var(--muted-foreground)]"}`}
+              title="图谱模式"
             >
-              {sub}
+              <GitGraph size={16} strokeWidth={1.5} />
+            </button>
+            <button
+              onClick={() => setViewMode("tree")}
+              className={`p-2 rounded-lg transition-all ${viewMode === "tree" ? "bg-[var(--card)] text-indigo-600 shadow-sm" : "text-[var(--muted-foreground)]"}`}
+              title="树状模式"
+            >
+              <ListTree size={16} strokeWidth={1.5} />
+            </button>
+          </div>
+
+          <button
+            onClick={() => setShowAiAdd(true)}
+            className="flex items-center gap-1.5 text-xs px-3 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:shadow-lg hover:shadow-indigo-500/20 transition-all flex-shrink-0"
+          >
+            <Sparkles size={13} />
+            <span className="hidden sm:inline">AI 添加</span>
+          </button>
+        </div>
+
+        {/* Row 2: Subject filter */}
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {[
+            { value: "all", label: "全部" },
+            { value: "数学", label: "数学" },
+            { value: "英语", label: "英语" },
+            { value: "政治", label: "政治" },
+            { value: "408", label: "408" },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setSubjectFilter(opt.value)}
+              className={`text-xs px-3 py-1.5 rounded-full transition-all font-medium flex-shrink-0 flex items-center gap-1.5 ${
+                subjectFilter === opt.value
+                  ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/20"
+                  : "bg-[var(--card)] border border-[var(--card-border)] text-[var(--muted-foreground)] hover:border-indigo-300"
+              }`}
+            >
+              {opt.value !== "all" && <span className="w-1.5 h-1.5 rounded-full" style={{ background: subjectColors[opt.value] }} />}
+              {opt.label}
             </button>
           ))}
         </div>
-      )}
 
-      {/* Graph + detail layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 md:gap-6">
-        {/* Graph canvas */}
-        <div className="lg:col-span-3 card relative" style={{ height: "calc(100vh - 260px)", minHeight: "400px" }}>
-          {loading ? (
-            <div className="h-full flex items-center justify-center text-[var(--muted-foreground)] text-sm">Loading...</div>
-          ) : (
-            <>
-              <div ref={containerRef} className="h-full w-full rounded-lg touch-pan-x touch-pan-y" />
-              <div className="absolute bottom-3 left-3 text-[10px] text-[var(--muted-foreground)] bg-[var(--card)]/80 rounded-lg px-2 py-1">双击节点编辑</div>
-            </>
+        {/* Row 3: Status filter */}
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {filterOptions.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setStatusFilter(opt.value)}
+              className={`text-xs px-2.5 py-1.5 rounded-full transition-all flex-shrink-0 flex items-center gap-1.5 ${
+                statusFilter === opt.value
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+              }`}
+            >
+              {opt.value !== "all" && <span className="w-1.5 h-1.5 rounded-full" style={{ background: getNodeColor(opt.value) }} />}
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Main area: graph + panel */}
+      <div className="flex-1 flex gap-0 relative min-h-0" style={{ overflow: "hidden" }}>
+        {/* Graph */}
+        <div
+          className={`knowledge-graph-canvas flex-1 relative rounded-2xl border border-indigo-100/80 bg-white transition-all shadow-[0_18px_60px_rgba(15,23,42,0.06)] ${showPanel ? "md:mr-[360px]" : ""}`}
+          style={{ overflow: "hidden" }}
+        >
+          {loading && (
+            <div className="absolute inset-0 flex flex-col gap-2 items-center justify-center bg-white/75 backdrop-blur-sm z-10">
+              <Loader2 size={24} className="animate-spin text-indigo-500" />
+              <span className="text-xs text-slate-500">正在整理知识脉络…</span>
+            </div>
           )}
+          <div ref={containerRef} className="absolute inset-0" />
+
+          <div className={`absolute left-3 top-3 md:left-4 md:top-4 z-[2] pointer-events-none transition-opacity ${graphReady ? "opacity-100" : "opacity-0"}`}>
+            <div className="rounded-xl border border-white/80 bg-white/80 px-3 py-2 shadow-sm backdrop-blur-md">
+              <p className="text-[11px] font-semibold text-slate-700">{allNodes.length} 个知识点</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">拖动探索 · 双击编辑</p>
+            </div>
+          </div>
+
+          <div className="absolute right-3 top-3 md:right-4 md:top-4 z-[2] flex flex-col gap-2">
+            <button onClick={fitGraph} title="居中显示" className="w-9 h-9 rounded-xl border border-white/80 bg-white/85 text-slate-600 shadow-sm backdrop-blur-md flex items-center justify-center hover:text-indigo-600 hover:shadow-md transition-all">
+              <Focus size={16} />
+            </button>
+            <button onClick={() => buildGraph(allNodes, allEdges)} title="重新排布" className="w-9 h-9 rounded-xl border border-white/80 bg-white/85 text-slate-600 shadow-sm backdrop-blur-md flex items-center justify-center hover:text-indigo-600 hover:shadow-md transition-all">
+              <RotateCcw size={15} />
+            </button>
+          </div>
+
+          <div className="absolute left-3 bottom-3 md:left-4 md:bottom-4 z-[2] hidden sm:flex items-center gap-3 rounded-xl border border-white/80 bg-white/80 px-3 py-2 shadow-sm backdrop-blur-md pointer-events-none">
+            {["learning", "mastered", "keypoint", "frequent_mistake"].map((status) => (
+              <span key={status} className="flex items-center gap-1.5 text-[10px] text-slate-500">
+                <span className="w-2 h-2 rounded-full" style={{ background: getNodeColor(status) }} />
+                {statusConfig[status].label}
+              </span>
+            ))}
+          </div>
         </div>
 
-        {/* Detail panel */}
-        <div className="card p-5 h-fit lg:sticky lg:top-4 space-y-4 max-h-[calc(100vh-100px)] overflow-y-auto">
-          {selectedNode ? (
-            <>
-              {/* Name + status */}
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h3 className="text-base font-semibold">{selectedNode.label}</h3>
-                  {st && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full"
-                      style={{ background: st.bg, color: st.color, border: `1px solid ${st.color}` }}>
-                      {st.label}
+        {/* Right panel */}
+        {showPanel && selectedNode && (
+          <div className="fixed md:absolute inset-x-0 bottom-0 md:inset-y-0 md:left-auto md:right-0 w-full md:w-[360px] max-h-[78vh] md:max-h-none rounded-t-2xl md:rounded-none bg-[var(--card)] border-t md:border-t-0 md:border-l border-[var(--card-border)] z-40 overflow-y-auto shadow-2xl md:shadow-none flex flex-col animate-slide-up md:animate-none safe-bottom">
+            {/* Panel header */}
+            <div className="sticky top-0 bg-[var(--card)] border-b border-[var(--card-border)] p-4">
+              <div className="flex items-start justify-between">
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-lg font-semibold truncate">{selectedNode.label}</h2>
+                  <div className="flex items-center gap-1 mt-1">
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <Star
+                        key={i}
+                        size={14}
+                        fill={i <= selectedNode.level ? getNodeColor(selectedNode.status) : "none"}
+                        color={i <= selectedNode.level ? getNodeColor(selectedNode.status) : "#d1d5db"}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <span
+                      className="text-xs px-2 py-0.5 rounded-full"
+                      style={{ backgroundColor: getNodeBg(selectedNode.status), color: getNodeColor(selectedNode.status) }}
+                    >
+                      {statusConfig[selectedNode.status]?.label || selectedNode.status}
                     </span>
+                    <span className="text-xs text-[var(--muted-foreground)]">{selectedNode.group}</span>
+                    {selectedNode.chapterName && (
+                      <span className="text-xs text-[var(--muted-foreground)]">{selectedNode.chapterName}</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setShowPanel(false); setSelectedNode(null); }}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--muted)] flex-shrink-0"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <button
+                onClick={() => openEditor(selectedNode)}
+                className="mt-3 w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-lg border border-[var(--card-border)] hover:bg-[var(--muted)] transition-colors"
+              >
+                <Edit3 size={12} />
+                编辑知识节点
+              </button>
+            </div>
+
+            {/* Panel content */}
+            <div className="flex-1 p-4 space-y-5">
+              {/* 我的理解 */}
+              <section>
+                <h3 className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide mb-2">我的理解</h3>
+                <div className="text-sm text-[var(--foreground)] leading-relaxed bg-[var(--muted)] rounded-lg p-3 min-h-[60px]">
+                  {selectedNode.description || (
+                    <span className="text-[var(--muted-foreground)] italic">暂无笔记，双击节点添加理解...</span>
                   )}
                 </div>
-                <p className="text-xs text-[var(--muted-foreground)]">
-                  {selectedNode.group}{selectedNode.chapterName ? ` · ${selectedNode.chapterName}` : ""}
-                </p>
-              </div>
-
-              {/* Mastery stars */}
-              <div>
-                <div className="text-[10px] text-[var(--muted-foreground)] mb-1">掌握程度</div>
-                <div className="flex items-center gap-1">
-                  {[1, 2, 3, 4, 5].map((i) => (
-                    <Star key={i} size={14} strokeWidth={1.5}
-                      className={i <= selectedNode.level ? "fill-current" : "text-[var(--card-border)]"}
-                      style={{ color: i <= selectedNode.level ? getNodeColor(selectedNode.level) : undefined }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Pages */}
-              {(selectedNode.pageStart || selectedNode.pageEnd) && (
-                <div>
-                  <div className="text-[10px] text-[var(--muted-foreground)] mb-1 flex items-center gap-1.5">
-                    <BookOpen size={12} />教材页码
-                  </div>
-                  <p className="text-xs text-[var(--muted-foreground)]">
-                    {selectedNode.pageStart && `P${selectedNode.pageStart}`}
-                    {selectedNode.pageStart && selectedNode.pageEnd && ` - `}
-                    {selectedNode.pageEnd && `P${selectedNode.pageEnd}`}
+                {selectedNode.pageStart && (
+                  <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                    教材页码：P{selectedNode.pageStart}{selectedNode.pageEnd ? `-${selectedNode.pageEnd}` : ""}
                   </p>
-                </div>
-              )}
-
-              {/* Tags */}
-              {selectedNode.tags && (
-                <div>
-                  <div className="text-[10px] text-[var(--muted-foreground)] mb-1">标签</div>
-                  <div className="flex flex-wrap gap-1">
-                    {selectedNode.tags.split(",").map((t) => (
-                      <span key={t} className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--muted)] text-[var(--muted-foreground)]">{t.trim()}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Last review */}
-              {selectedNode.lastReviewAt && (
-                <div className="text-[10px] text-[var(--muted-foreground)]">
-                  最近学习：{new Date(selectedNode.lastReviewAt).toLocaleDateString("zh-CN")}
-                </div>
-              )}
-
-              {/* Description (editable inline) */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] text-[var(--muted-foreground)] flex items-center gap-1.5">
-                    <Edit3 size={11} />我的理解
-                  </span>
-                  {!editingDescription && (
-                    <button onClick={() => { setInlineDesc(selectedNode.description || ""); setEditingDescription(true); }}
-                      className="text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
-                      {selectedNode.description ? "编辑" : "添加"}
-                    </button>
-                  )}
-                </div>
-                {editingDescription ? (
-                  <div className="space-y-2">
-                    <textarea value={inlineDesc} onChange={(e) => setInlineDesc(e.target.value)}
-                      placeholder="记录自己的理解、易错点、公式..."
-                      rows={4}
-                      className="w-full text-xs bg-[var(--muted)] rounded-lg px-3 py-2 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] resize-none"
-                      autoFocus />
-                    <div className="flex gap-2">
-                      <button onClick={saveDescription} className="btn btn-primary text-[11px] py-1 px-3">保存</button>
-                      <button onClick={() => setEditingDescription(false)} className="btn btn-secondary text-[11px] py-1 px-3">取消</button>
-                    </div>
-                  </div>
-                ) : selectedNode.description ? (
-                  <p className="text-xs text-[var(--muted-foreground)] whitespace-pre-wrap leading-relaxed">{selectedNode.description}</p>
-                ) : (
-                  <p className="text-[10px] text-[var(--muted-foreground)] italic">暂无理解笔记</p>
                 )}
-              </div>
+              </section>
 
-              {/* Related mistakes */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] text-[var(--muted-foreground)] flex items-center gap-1.5">
-                    <AlertTriangle size={11} />相关错题 ({selectedNode.relatedMistakes.length})
-                  </span>
-                </div>
-                {selectedNode.relatedMistakes.length > 0 ? (
-                  <div className="space-y-1">
-                    {selectedNode.relatedMistakes.map((m) => (
-                      <a key={m.id} href={`/wrong-questions`}
-                        className="flex items-center gap-2 text-xs p-2 rounded-lg hover:bg-[var(--muted)] transition-colors text-[var(--muted-foreground)] no-underline">
-                        <span className="w-1 h-1 rounded-full" style={{ background: m.reviewStatus === "mastered" ? "#a8bfb4" : "#d4c4b8" }} />
-                        {m.title}
-                      </a>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-[10px] text-[var(--muted-foreground)] italic">暂无关联错题</p>
-                )}
-              </div>
-
-              {/* Related notes */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[10px] text-[var(--muted-foreground)] flex items-center gap-1.5">
-                    <FileText size={11} />相关笔记 ({selectedNode.relatedNotes.length})
-                  </span>
-                  <button onClick={fetchAvailableNotes}
-                    className="text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)] flex items-center gap-0.5">
-                    <Plus size={11} />关联
-                  </button>
-                </div>
-                {selectedNode.relatedNotes.length > 0 ? (
-                  <div className="space-y-1">
-                    {selectedNode.relatedNotes.map((n) => (
-                      <div key={n.id} className="flex items-center justify-between text-xs p-2 rounded-lg hover:bg-[var(--muted)] transition-colors group">
-                        <a href={`/notes`} className="text-[var(--muted-foreground)] no-underline flex-1 truncate">{n.title}</a>
-                        <button onClick={() => unlinkNote(n.id)}
-                          className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-[var(--card-border)] transition-opacity">
-                          <X size={10} />
+              {/* 知识关系 */}
+              <section>
+                <h3 className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <GitGraph size={12} />知识关系
+                </h3>
+                {selectedNode.relatedRelations.length > 0 ? (
+                  <div className="space-y-1.5 mb-3">
+                    {selectedNode.relatedRelations.map((relation) => (
+                      <div key={relation.id} className="flex items-center gap-2 rounded-lg bg-[var(--muted)] px-3 py-2 text-xs">
+                        <span className="text-[var(--muted-foreground)]">
+                          {relation.direction === "incoming" && relation.label === "prerequisite" ? "依赖于此" : relationLabelText[relation.label] || "相关"}
+                        </span>
+                        <span className="flex-1 truncate">{relation.nodeName}</span>
+                        <button
+                          onClick={() => deleteRelation(relation.id)}
+                          disabled={relationSaving}
+                          className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-red-50 hover:text-red-500"
+                          aria-label={`删除与 ${relation.nodeName} 的关系`}
+                        >
+                          <Trash2 size={12} />
                         </button>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-[10px] text-[var(--muted-foreground)] italic">暂无关联笔记</p>
+                  <p className="text-xs text-[var(--muted-foreground)] mb-3">暂无知识关系</p>
                 )}
-              </div>
+                <div className="space-y-2">
+                  <select
+                    value={relationTargetId}
+                    onChange={(event) => setRelationTargetId(event.target.value)}
+                    className="w-full text-xs bg-[var(--muted)] rounded-lg px-2.5 py-2 border border-[var(--card-border)] outline-none"
+                  >
+                    <option value="">选择另一个知识点</option>
+                    {allNodes.filter((node) => node.id !== selectedNode.id).map((node) => (
+                      <option key={node.id} value={node.id}>{node.group} · {node.label}</option>
+                    ))}
+                  </select>
+                  <div className="flex gap-2">
+                    <select
+                      value={relationLabel}
+                      onChange={(event) => setRelationLabel(event.target.value)}
+                      className="flex-1 text-xs bg-[var(--muted)] rounded-lg px-2.5 py-2 border border-[var(--card-border)] outline-none"
+                    >
+                      <option value="related">相关</option>
+                      <option value="prerequisite">前置知识</option>
+                      <option value="confusable">易混淆</option>
+                    </select>
+                    <button
+                      onClick={addRelation}
+                      disabled={!relationTargetId || relationSaving}
+                      className="btn btn-secondary text-xs gap-1 px-3 disabled:opacity-50"
+                    >
+                      {relationSaving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}添加
+                    </button>
+                  </div>
+                  {relationError && <p className="text-xs text-red-500">{relationError}</p>}
+                </div>
+              </section>
 
-              {/* Edit button */}
-              <button onClick={() => openEditor(selectedNode)}
-                className="btn btn-secondary text-xs w-full gap-1.5">
-                <Edit3 size={12} />编辑节点
-              </button>
-            </>
-          ) : (
-            <div className="text-sm text-[var(--muted-foreground)] text-center py-8">
-              点击图谱节点<br/>查看详细信息
+              {/* 相关错题 */}
+              <section>
+                <h3 className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <AlertTriangle size={12} />
+                  相关错题
+                  {selectedNode.mistakeCount > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-50 text-red-500">{selectedNode.mistakeCount}</span>
+                  )}
+                </h3>
+                {selectedNode.relatedMistakes.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {selectedNode.relatedMistakes.map((m) => (
+                      <a
+                        key={m.id}
+                        href={`/wrong-questions`}
+                        className="block text-sm px-3 py-2 rounded-lg hover:bg-[var(--muted)] transition-colors text-[var(--foreground)]"
+                      >
+                        {m.title}
+                        <span className={`text-[10px] ml-2 px-1.5 py-0.5 rounded-full ${
+                          m.reviewStatus === "mastered" ? "bg-green-50 text-green-500" : "bg-amber-50 text-amber-500"
+                        }`}>
+                          {m.reviewStatus === "mastered" ? "已掌握" : "待复习"}
+                        </span>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-[var(--muted-foreground)]">暂无相关错题</p>
+                )}
+              </section>
+
+              {/* 关联笔记 */}
+              <section>
+                <h3 className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <BookOpen size={12} />
+                  关联笔记
+                </h3>
+                {selectedNode.relatedNotes.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {selectedNode.relatedNotes.map((note) => (
+                      <a
+                        key={note.id}
+                        href={`/notes`}
+                        className="block text-sm px-3 py-2 rounded-lg hover:bg-[var(--muted)] transition-colors text-[var(--foreground)]"
+                      >
+                        {note.title}
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-[var(--muted-foreground)]">暂无关联笔记</p>
+                )}
+              </section>
+
+              {/* AI 分析 */}
+              <section>
+                <h3 className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                  <Sparkles size={12} />
+                  AI 分析
+                </h3>
+                <div className="space-y-2">
+                  <button
+                    onClick={() => handleAiGenerate("summary")}
+                    disabled={aiGenerating}
+                    className="w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-lg bg-[var(--muted)] hover:bg-[var(--card)] border border-[var(--card-border)] transition-colors"
+                  >
+                    {aiGenerating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                    生成知识总结
+                  </button>
+                  <button
+                    onClick={() => handleAiGenerate("advice")}
+                    disabled={aiGenerating}
+                    className="w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-lg bg-[var(--muted)] hover:bg-[var(--card)] border border-[var(--card-border)] transition-colors"
+                  >
+                    {aiGenerating ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                    生成学习建议
+                  </button>
+                  {aiResult && (
+                    <div className="text-xs text-[var(--foreground)] bg-blue-50 rounded-lg p-3 leading-relaxed">
+                      {aiResult}
+                    </div>
+                  )}
+                </div>
+              </section>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
-      {/* Mobile detail (bottom sheet) */}
-      {showPanel && selectedNode && (
-        <div className="lg:hidden fixed inset-0 z-50 flex flex-col justify-end">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setShowPanel(false)} />
-          <div className="relative card rounded-t-2xl p-5 pb-8 shadow-2xl safe-bottom animate-slide-up max-h-[75vh] overflow-y-auto space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-[var(--muted-foreground)]">知识点详情</span>
-              <div className="flex items-center gap-2">
-                <button onClick={() => { setShowPanel(false); openEditor(selectedNode); }} className="text-xs px-2 py-1 rounded hover:bg-[var(--muted)]">编辑</button>
-                <button onClick={() => setShowPanel(false)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--muted)]"><X size={16} /></button>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg font-semibold">{selectedNode.label}</h3>
-                {st && <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: st.bg, color: st.color }}>{st.label}</span>}
-              </div>
-              <p className="text-xs text-[var(--muted-foreground)] mt-1">{selectedNode.group}{selectedNode.chapterName ? ` · ${selectedNode.chapterName}` : ""}</p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-[var(--muted-foreground)]">掌握程度</span>
-              <div className="flex items-center gap-0.5">
-                {[1,2,3,4,5].map(i => (
-                  <Star key={i} size={13} strokeWidth={1.5}
-                    className={i <= selectedNode.level ? "fill-current" : "text-[var(--card-border)]"}
-                    style={{ color: i <= selectedNode.level ? getNodeColor(selectedNode.level) : undefined }} />
-                ))}
-              </div>
-            </div>
-
-            {(selectedNode.pageStart || selectedNode.pageEnd) && (
-              <div className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
-                <BookOpen size={12} />
-                {selectedNode.pageStart && `P${selectedNode.pageStart}`}
-                {selectedNode.pageStart && selectedNode.pageEnd && " - "}
-                {selectedNode.pageEnd && `P${selectedNode.pageEnd}`}
-              </div>
-            )}
-
-            {selectedNode.description && (
-              <div>
-                <span className="text-[10px] text-[var(--muted-foreground)]">我的理解</span>
-                <p className="text-xs whitespace-pre-wrap leading-relaxed mt-1">{selectedNode.description}</p>
-              </div>
-            )}
-
-            <button onClick={() => { setShowPanel(false); openEditor(selectedNode); }}
-              className="btn btn-secondary text-xs w-full">编辑节点</button>
-          </div>
-        </div>
-      )}
-
-      {/* ===== Edit Modal ===== */}
+      {/* Edit modal */}
       {editingNode && (
         <>
-          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setEditingNode(null)} />
-          <div className="fixed inset-x-4 top-[5%] max-h-[90vh] overflow-y-auto md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[520px] z-50 card flex flex-col shadow-2xl">
-            <div className="flex items-center justify-between p-4 border-b border-[var(--card-border)]">
-              <h2 className="text-sm font-semibold flex items-center gap-2"><Edit3 size={14} />编辑知识节点</h2>
-              <button onClick={() => setEditingNode(null)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--muted)]"><X size={16} /></button>
-            </div>
-
-            <div className="p-4 space-y-4">
-              {/* Name */}
-              <div>
-                <label className="text-xs text-[var(--muted-foreground)] mb-1 block">名称</label>
-                <input type="text" value={editName} onChange={e => setEditName(e.target.value)}
-                  className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)]" />
-              </div>
-
-              {/* Status */}
-              <div>
-                <label className="text-xs text-[var(--muted-foreground)] mb-1 block">学习状态</label>
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(statusConfig).map(([key, cfg]) => (
-                    <button key={key} onClick={() => setEditStatus(key)}
-                      className="text-xs px-3 py-1.5 rounded-full transition-colors"
-                      style={{ background: key === editStatus ? cfg.color : "var(--muted)", color: key === editStatus ? "#fff" : "var(--muted-foreground)" }}>
-                      {cfg.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Mastery */}
-              <div>
-                <label className="text-xs text-[var(--muted-foreground)] mb-1 block">掌握程度</label>
-                <div className="flex items-center gap-2">
-                  {[0,1,2,3,4,5].map(i => (
-                    <button key={i} onClick={() => setEditLevel(i)}
-                      className="w-9 h-9 rounded-full text-xs font-medium transition-colors"
-                      style={{ background: i === editLevel ? getNodeColor(i) : "var(--muted)", color: i === editLevel ? "#fff" : "var(--muted-foreground)" }}>
-                      {i}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Pages */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">起始页</label>
-                  <input type="number" value={editPageStart} onChange={e => setEditPageStart(e.target.value)}
-                    placeholder="如: 145"
-                    className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)]" />
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">结束页</label>
-                  <input type="number" value={editPageEnd} onChange={e => setEditPageEnd(e.target.value)}
-                    placeholder="如: 152"
-                    className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)]" />
-                </div>
-              </div>
-
-              {/* Tags */}
-              <div>
-                <label className="text-xs text-[var(--muted-foreground)] mb-1 block">标签（逗号分隔）</label>
-                <input type="text" value={editTags} onChange={e => setEditTags(e.target.value)}
-                  placeholder="如: 重点, 易错, 408"
-                  className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)]" />
-              </div>
-
-              {/* Description */}
-              <div>
-                <label className="text-xs text-[var(--muted-foreground)] mb-1 flex items-center gap-1.5"><FileText size={12} />我的理解</label>
-                <textarea value={editDescription} onChange={e => setEditDescription(e.target.value)}
-                  placeholder="记录自己的理解、易错点、公式、总结..."
-                  rows={5}
-                  className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] resize-none" />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 p-4 border-t border-[var(--card-border)]">
-              <button onClick={() => setEditingNode(null)} className="btn btn-secondary text-sm">取消</button>
-              <button onClick={saveNode} disabled={saving} className="btn btn-primary text-sm gap-1.5">
-                {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                {saving ? "保存中..." : "保存"}
+          <div className="fixed inset-0 z-[80] bg-black/30" onClick={() => setEditingNode(null)} />
+          <div className="fixed inset-x-4 top-[10%] md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[480px] z-[90] card shadow-2xl">
+            <div className="p-4 border-b border-[var(--card-border)] flex items-center justify-between">
+              <h3 className="text-sm font-semibold">编辑知识节点</h3>
+              <button onClick={() => setEditingNode(null)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--muted)]">
+                <X size={16} />
               </button>
             </div>
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="text-xs text-[var(--muted-foreground)] block mb-1">名称</label>
+                <input
+                  type="text" value={editName} onChange={(e) => setEditName(e.target.value)}
+                  className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)]"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-[var(--muted-foreground)] block mb-1">掌握等级</label>
+                <div className="flex gap-1">
+                  {[0, 1, 2, 3, 4, 5].map((l) => (
+                    <button
+                      key={l}
+                      onClick={() => setEditLevel(l)}
+                      className={`text-lg ${l <= editLevel ? "text-amber-400" : "text-gray-200"}`}
+                    >
+                      ★
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-[var(--muted-foreground)] block mb-1">学习状态</label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)]"
+                >
+                  {Object.entries(statusConfig).map(([k, v]) => (
+                    <option key={k} value={k}>{v.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-[var(--muted-foreground)] block mb-1">我的理解</label>
+                <textarea
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  rows={4}
+                  placeholder="记录你对这个知识点的理解..."
+                  className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] resize-none"
+                />
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setEditingNode(null)} className="btn btn-secondary text-sm">取消</button>
+                <button onClick={saveNode} disabled={saving} className="btn btn-primary text-sm gap-1.5">
+                  {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+                  保存
+                </button>
+              </div>
+            </div>
           </div>
         </>
       )}
 
-      {/* ===== Link note modal ===== */}
-      {showLinkNote && (
+      {/* AI add modal */}
+      {showAiAdd && (
         <>
-          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setShowLinkNote(false)} />
-          <div className="fixed inset-x-4 top-[20%] md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[400px] z-50 card flex flex-col shadow-2xl max-h-[60vh]">
-            <div className="flex items-center justify-between p-4 border-b border-[var(--card-border)]">
-              <h3 className="text-sm font-semibold">关联笔记</h3>
-              <button onClick={() => setShowLinkNote(false)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--muted)]"><X size={16} /></button>
+          <div className="fixed inset-0 z-[80] bg-black/30" onClick={() => setShowAiAdd(false)} />
+          <div className="fixed inset-x-4 top-[8%] bottom-4 md:bottom-auto md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[520px] z-[90] card shadow-2xl overflow-y-auto">
+            <div className="p-4 border-b border-[var(--card-border)] flex items-center justify-between">
+              <h3 className="text-sm font-semibold flex items-center gap-2">
+                <Sparkles size={14} />
+                AI 提取新知识点
+              </h3>
+              <button onClick={() => setShowAiAdd(false)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--muted)]">
+                <X size={16} />
+              </button>
             </div>
-            <div className="overflow-y-auto p-2">
-              {linkLoading ? (
-                <div className="p-4 text-center text-sm text-[var(--muted-foreground)]">加载中...</div>
-              ) : availableNotes.length === 0 ? (
-                <div className="p-4 text-center text-sm text-[var(--muted-foreground)]">暂无笔记</div>
-              ) : (
-                availableNotes.filter(n => !selectedNode?.relatedNotes.find(rn => rn.id === n.id)).map(n => (
-                  <button key={n.id} onClick={() => linkNote(n.id)}
-                    className="w-full flex items-center gap-2 px-3 py-2.5 text-sm rounded-lg hover:bg-[var(--muted)] transition-colors text-left">
-                    <Link2 size={14} strokeWidth={1.5} className="text-[var(--muted-foreground)]" />
-                    {n.title}
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        </>
-      )}
+            <div className="p-4 space-y-4">
+              <textarea
+                value={aiInput}
+                onChange={(e) => setAiInput(e.target.value)}
+                placeholder="粘贴你最近的学习内容、笔记或教材章节名，AI 会自动提取其中的知识点..."
+                rows={4}
+                className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] resize-none"
+              />
 
-      {/* ===== New node modal ===== */}
-      {showNewNode && (
-        <>
-          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setShowNewNode(false)} />
-          <div className="fixed inset-x-4 top-[5%] max-h-[90vh] overflow-y-auto md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[520px] z-50 card flex flex-col shadow-2xl">
-            <div className="flex items-center justify-between p-4 border-b border-[var(--card-border)]">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setNewNodeMode("manual")}
-                  className={`text-sm px-3 py-1 rounded-lg transition-colors ${newNodeMode === "manual" ? "bg-[var(--accent)] text-[var(--accent-foreground)]" : "text-[var(--muted-foreground)]"}`}
-                >
-                  手动添加
-                </button>
-                <button
-                  onClick={() => setNewNodeMode("ai")}
-                  className={`text-sm px-3 py-1 rounded-lg transition-colors flex items-center gap-1 ${newNodeMode === "ai" ? "bg-[var(--accent)] text-[var(--accent-foreground)]" : "text-[var(--muted-foreground)]"}`}
-                >
-                  <Sparkles size={12} />AI 智能新增
-                </button>
-              </div>
-              <button onClick={() => setShowNewNode(false)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--muted)]"><X size={16} /></button>
-            </div>
+              <button
+                onClick={handleAiExtract}
+                disabled={aiExtracting || !aiInput.trim()}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-[var(--foreground)] text-[var(--background)] text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {aiExtracting ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {aiExtracting ? "提取中..." : "AI 分析提取"}
+              </button>
 
-            {newNodeMode === "manual" ? (
-              <div className="p-4 space-y-4">
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">知识点名称</label>
-                  <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
-                    placeholder="如: 极限的定义"
-                    className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)]" />
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">科目</label>
-                  <select value={newSubject} onChange={e => setNewSubject(e.target.value)}
-                    className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] min-h-[40px]">
-                    <option value="">选择科目</option>
-                    {subjects.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">父节点（可选）</label>
-                  <select value={newParentId} onChange={e => setNewParentId(e.target.value)}
-                    className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] min-h-[40px]">
-                    <option value="">无（顶级节点）</option>
-                    {allNodes.filter(n => !newSubject || n.group === newSubject).map(n => <option key={n.id} value={n.id}>{n.label} ({n.group})</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">初始掌握度</label>
-                  <div className="flex items-center gap-2">
-                    {[0,1,2,3,4,5].map(i => (
-                      <button key={i} onClick={() => setNewLevel(i)}
-                        className="w-8 h-8 rounded-full text-xs font-medium transition-colors"
-                        style={{ background: i === newLevel ? getNodeColor(i) : "var(--muted)", color: i === newLevel ? "#fff" : "var(--muted-foreground)" }}>{i}</button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">学习状态</label>
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(statusConfig).map(([key, cfg]) => (
-                      <button key={key} onClick={() => setNewStatus(key)}
-                        className="text-xs px-3 py-1.5 rounded-full transition-colors"
-                        style={{ background: key === newStatus ? cfg.color : "var(--muted)", color: key === newStatus ? "#fff" : "var(--muted-foreground)" }}>{cfg.label}</button>
-                    ))}
-                  </div>
-                </div>
-                <button onClick={handleManualAdd} disabled={newNodeSaving || !newName.trim() || !newSubject}
-                  className="btn btn-primary text-sm w-full gap-1.5" style={{ opacity: newNodeSaving || !newName.trim() || !newSubject ? 0.5 : 1 }}>
-                  <Save size={14} />{newNodeSaving ? "保存中..." : "添加知识点"}
-                </button>
-              </div>
-            ) : (
-              <div className="p-4 space-y-4">
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)] mb-1 block">输入学习内容，AI 自动提取知识点</label>
-                  <textarea value={aiInput} onChange={e => setAiInput(e.target.value)}
-                    placeholder="粘贴你的学习笔记、课本段落或总结，AI 将自动识别并提取知识点..."
-                    rows={6}
-                    className="w-full text-sm bg-[var(--muted)] rounded-lg px-3 py-2.5 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] resize-none" />
-                </div>
-                <button onClick={handleAiExtract} disabled={aiExtracting || !aiInput.trim()}
-                  className="btn btn-primary text-sm w-full gap-1.5" style={{ opacity: aiExtracting || !aiInput.trim() ? 0.5 : 1 }}>
-                  {aiExtracting ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                  {aiExtracting ? "分析中..." : "AI 提取知识点"}
-                </button>
-
-                {aiPreview.length > 0 && (
-                  <div className="space-y-2 pt-2 border-t border-[var(--card-border)]">
-                    <div className="text-xs text-[var(--muted-foreground)]">AI 识别到 {aiPreview.length} 个知识点：</div>
+              {aiPreview.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    请确认后再写入；已存在的同名节点会自动跳过。
+                  </p>
+                  <div className="space-y-2 max-h-[42vh] overflow-y-auto pr-1">
                     {aiPreview.map((node, i) => (
-                      <div key={i} className="card p-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">{node.name}</span>
-                          <span className="text-[10px] text-[var(--muted-foreground)] bg-[var(--muted)] px-2 py-0.5 rounded-full">{node.subject}</span>
+                      <div key={`${node.name}-${i}`} className="rounded-lg bg-[var(--muted)] p-3 text-sm space-y-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={node.selected}
+                            disabled={Boolean(node.existingId)}
+                            onChange={(event) => setAiPreview((items) => items.map((item, index) =>
+                              index === i ? { ...item, selected: event.target.checked } : item
+                            ))}
+                            aria-label={`选择 ${node.name}`}
+                          />
+                          <input
+                            value={node.name}
+                            disabled={Boolean(node.existingId)}
+                            onChange={(event) => setAiPreview((items) => items.map((item, index) =>
+                              index === i ? { ...item, name: event.target.value } : item
+                            ))}
+                            className="min-w-0 flex-1 bg-transparent font-medium outline-none"
+                          />
+                          <select
+                            value={node.subject}
+                            disabled={Boolean(node.existingId)}
+                            onChange={(event) => setAiPreview((items) => items.map((item, index) =>
+                              index === i ? { ...item, subject: event.target.value } : item
+                            ))}
+                            className="bg-transparent text-xs text-[var(--muted-foreground)] outline-none"
+                          >
+                            {["数学", "英语", "408", "政治"].map((subject) => (
+                              <option key={subject}>{subject}</option>
+                            ))}
+                          </select>
                         </div>
-                        {node.notes && <p className="text-xs text-[var(--muted-foreground)] mt-1">{node.notes}</p>}
+                        {node.existingId ? (
+                          <div className="text-xs text-amber-600">图谱中已存在，将跳过</div>
+                        ) : (
+                          <>
+                            <textarea
+                              value={node.notes}
+                              onChange={(event) => setAiPreview((items) => items.map((item, index) =>
+                                index === i ? { ...item, notes: event.target.value } : item
+                              ))}
+                              rows={2}
+                              placeholder="知识点说明"
+                              className="w-full bg-[var(--card)] rounded-md px-2 py-1.5 text-xs outline-none resize-none"
+                            />
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <input
+                                value={node.parent}
+                                onChange={(event) => setAiPreview((items) => items.map((item, index) =>
+                                  index === i ? { ...item, parent: event.target.value } : item
+                                ))}
+                                placeholder="上位知识点（可选）"
+                                className="bg-[var(--card)] rounded-md px-2 py-1.5 text-xs outline-none"
+                              />
+                              <input
+                                value={node.related.join("、")}
+                                onChange={(event) => setAiPreview((items) => items.map((item, index) =>
+                                  index === i ? { ...item, related: event.target.value.split(/[、,，]/).map((v) => v.trim()).filter(Boolean) } : item
+                                ))}
+                                placeholder="相关知识点，用顿号分隔"
+                                className="bg-[var(--card)] rounded-md px-2 py-1.5 text-xs outline-none"
+                              />
+                            </div>
+                          </>
+                        )}
                       </div>
                     ))}
-                    <button onClick={handleAddAiNodes} disabled={newNodeSaving}
-                      className="btn btn-primary text-sm w-full gap-1.5">
-                      <Plus size={14} />{newNodeSaving ? "添加中..." : `一键添加 ${aiPreview.length} 个知识点`}
-                    </button>
                   </div>
-                )}
-              </div>
-            )}
+                  <button
+                    onClick={handleAddAiNodes}
+                    disabled={!aiPreview.some((node) => node.selected && !node.existingId)}
+                    className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-green-500 text-white text-sm hover:bg-green-600 transition-colors disabled:opacity-50"
+                  >
+                    确认添加选中的知识点
+                  </button>
+                </div>
+              )}
+
+              {aiError && (
+                <div className="text-sm text-red-600 bg-red-50 rounded-lg p-3">{aiError}</div>
+              )}
+
+              {aiAdded > 0 && (
+                <div className="text-sm text-green-600 text-center">
+                  ✅ 已添加 {aiAdded} 个知识点
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}

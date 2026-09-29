@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -16,7 +17,6 @@ import {
   Menu,
   X,
   Sparkles,
-  Wifi,
 } from "lucide-react";
 
 const menuItems = [
@@ -31,29 +31,83 @@ const menuItems = [
   { href: "/settings", label: "设置", icon: Settings },
 ];
 
+const subscribeToClient = () => () => {};
+
 export default function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-    setOpen(false);
-  }, [pathname]);
-
-  // Avoid hydration mismatch: render placeholder until client-side mount
-  const todayStr = mounted
-    ? new Date().toLocaleDateString("zh-CN", {
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const dragStartRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const draggedRef = useRef(false);
+  const isClient = useSyncExternalStore(
+    subscribeToClient,
+    () => true,
+    () => false
+  );
+  const todayStr = isClient
+    ? new Intl.DateTimeFormat("zh-CN", {
         month: "long",
         day: "numeric",
         weekday: "short",
-      })
+        timeZone: "Asia/Shanghai",
+      }).format(new Date())
     : "";
+
+  function handleMenuPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    dragStartRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+    };
+    draggedRef.current = false;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleMenuPointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const start = dragStartRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - start.clientX;
+    const deltaY = event.clientY - start.clientY;
+    if (Math.hypot(deltaX, deltaY) > 4) draggedRef.current = true;
+    if (!draggedRef.current) return;
+
+    const edge = 8;
+    const size = 40;
+    setMenuPosition({
+      left: Math.min(Math.max(edge, start.left + deltaX), window.innerWidth - size - edge),
+      top: Math.min(Math.max(edge, start.top + deltaY), window.innerHeight - size - edge),
+    });
+  }
+
+  function handleMenuPointerEnd(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragStartRef.current = null;
+  }
+
+  function handleMenuClick() {
+    if (draggedRef.current) {
+      draggedRef.current = false;
+      return;
+    }
+    setOpen(true);
+  }
 
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex fixed top-0 left-0 z-30 h-full w-[240px] bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)] flex-col">
+      <aside className="hidden md:flex fixed top-0 left-0 z-50 h-full w-[240px] bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)] flex-col">
         <div className="p-5 pb-4">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-9 h-9 rounded-full bg-[var(--accent)] flex items-center justify-center text-[var(--accent-foreground)] text-sm font-semibold">
@@ -102,14 +156,20 @@ export default function Sidebar() {
 
       {/* Mobile: hamburger button */}
       <button
-        onClick={() => setOpen(true)}
-        className="md:hidden fixed z-30 flex items-center justify-center w-10 h-10 rounded-full bg-[var(--card)] border border-[var(--card-border)] active:scale-95 transition-transform touch-manipulation"
+        onClick={handleMenuClick}
+        onPointerDown={handleMenuPointerDown}
+        onPointerMove={handleMenuPointerMove}
+        onPointerUp={handleMenuPointerEnd}
+        onPointerCancel={handleMenuPointerEnd}
+        className="md:hidden fixed z-50 flex items-center justify-center w-10 h-10 rounded-full bg-[var(--card)] border border-[var(--card-border)] active:scale-95 transition-transform cursor-move select-none"
         style={{
-          top: "max(12px, env(safe-area-inset-top, 0px))",
-          left: "12px",
+          top: menuPosition?.top ?? "max(12px, env(safe-area-inset-top, 0px))",
+          left: menuPosition?.left ?? "12px",
           boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+          touchAction: "none",
         }}
         aria-label="菜单"
+        title="轻点打开菜单，拖动调整位置"
       >
         <Menu size={18} strokeWidth={1.5} />
       </button>
@@ -118,10 +178,10 @@ export default function Sidebar() {
       {open && (
         <>
           <div
-            className="md:hidden fixed inset-0 z-40 bg-black/30"
+            className="md:hidden fixed inset-0 z-[60] bg-black/30"
             onClick={() => setOpen(false)}
           />
-          <div className="md:hidden fixed top-0 left-0 z-50 h-full w-[280px] max-w-[85vw] bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)] flex flex-col shadow-2xl animate-slide-in">
+          <div className="md:hidden fixed top-0 left-0 z-[70] h-full w-[280px] max-w-[85vw] bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)] flex flex-col shadow-2xl animate-slide-in">
             <button
               onClick={() => setOpen(false)}
               className="absolute z-10 flex items-center justify-center w-10 h-10 rounded-lg right-3 hover:bg-[var(--card)] transition-colors touch-manipulation"
@@ -155,6 +215,7 @@ export default function Sidebar() {
                   <Link
                     key={item.href}
                     href={item.href}
+                    onClick={() => setOpen(false)}
                     className={`flex items-center gap-3 px-3 py-3 rounded-lg text-sm transition-colors touch-manipulation
                       ${isActive
                         ? "bg-[var(--card)] text-[var(--foreground)] font-medium"

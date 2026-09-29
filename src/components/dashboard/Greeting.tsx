@@ -1,18 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useSyncExternalStore } from "react";
 import { getGreeting } from "@/lib/utils";
 
+const subscribeToClient = () => () => {};
+
 export default function Greeting({ name }: { name: string }) {
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  const { greeting, emoji } = mounted
+  const isClient = useSyncExternalStore(
+    subscribeToClient,
+    () => true,
+    () => false
+  );
+  const { greeting, emoji } = isClient
     ? getGreeting()
-    : { greeting: "Good morning", emoji: "☀️" };
+    : { greeting: "你好", emoji: "👋" };
 
   return (
     <div>

@@ -3,6 +3,7 @@ import StatsCards from "@/components/dashboard/StatsCards";
 import TodayTasks from "@/components/dashboard/TodayTasks";
 import AIAssistant from "@/components/dashboard/AIAssistant";
 import { prisma } from "@/lib/prisma";
+import { getTodayTasksWithCarryOver } from "@/lib/tasks";
 
 export default async function DashboardPage() {
   const today = new Date();
@@ -12,11 +13,7 @@ export default async function DashboardPage() {
   tomorrow.setDate(tomorrow.getDate() + 1);
 
   const [tasks, todaySessions, allSessions, user] = await Promise.all([
-    prisma.task.findMany({
-      where: { date: { gte: today, lt: tomorrow } },
-      include: { subject: true },
-      orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
-    }),
+    getTodayTasksWithCarryOver(),
     prisma.studySession.findMany({
       where: { date: { gte: today, lt: tomorrow } },
     }),
@@ -56,7 +53,7 @@ export default async function DashboardPage() {
   );
 
   return (
-    <div className="max-w-4xl mx-auto space-y-4 md:space-y-6">
+    <div className="max-w-4xl mx-auto pt-12 md:pt-10 lg:pt-14 space-y-4 md:space-y-6">
       <Greeting name={user?.name || "hky"} />
       <StatsCards
         daysLeft={daysLeft}

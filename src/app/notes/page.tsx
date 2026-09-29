@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { BookOpen, Plus, X, Trash2, Paperclip, Image, FileText, Loader2, Sparkles } from "lucide-react";
+import { BookOpen, Plus, X, Trash2, Paperclip, FileText, Loader2, Sparkles } from "lucide-react";
 
 interface Note {
   id: string;
@@ -10,6 +10,7 @@ interface Note {
   tags: string | null;
   createdAt: string;
   updatedAt: string;
+  knowledgeNodes?: { id: string; name: string }[];
 }
 
 interface UploadedFile {
@@ -25,18 +26,23 @@ export default function NotesPage() {
   const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [tags, setTags] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [categorizing, setCategorizing] = useState(false);
+  const [aiTags, setAiTags] = useState<string[]>([]);
+  const [aiNodeIds, setAiNodeIds] = useState<string[]>([]);
+  const [aiNewNodes, setAiNewNodes] = useState<{ name: string; subject: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchNotes();
   }, []);
 
-  const fetchNotes = async () => {
+  async function fetchNotes() {
     try {
       const res = await fetch("/api/notes");
       const data = await res.json();
@@ -45,13 +51,16 @@ export default function NotesPage() {
       console.error("Failed to fetch notes:", err);
     }
     setLoading(false);
-  };
+  }
 
   const openNewNote = () => {
     setEditingNote(null);
     setTitle("");
     setContent("");
-    setTags("");
+    setTags([]);
+    setAiTags([]);
+    setAiNodeIds([]);
+    setTagInput("");
     setAttachments([]);
     setShowEditor(true);
   };
@@ -60,9 +69,11 @@ export default function NotesPage() {
     setEditingNote(note);
     setTitle(note.title);
     setContent(note.content);
-    setTags(note.tags || "");
+    setTags(note.tags ? note.tags.split(",").map((t) => t.trim()).filter(Boolean) : []);
+    setAiTags([]);
+    setAiNodeIds([]);
+    setTagInput("");
 
-    // Parse existing attachments from content
     const imgRegex = /!\[.*?\]\((\/uploads\/[^)]+)\)/g;
     const parsed: UploadedFile[] = [];
     let match;
@@ -71,6 +82,18 @@ export default function NotesPage() {
     }
     setAttachments(parsed);
     setShowEditor(true);
+  };
+
+  const addTag = (tag: string) => {
+    const t = tag.trim();
+    if (t && !tags.includes(t)) {
+      setTags((prev) => [...prev, t]);
+    }
+    setTagInput("");
+  };
+
+  const removeTag = (tag: string) => {
+    setTags((prev) => prev.filter((t) => t !== tag));
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -92,7 +115,6 @@ export default function NotesPage() {
           const data = await res.json();
           setAttachments((prev) => [...prev, data]);
 
-          // Auto-insert image markdown if it's an image
           if (data.type.startsWith("image/")) {
             setContent((prev) => prev + `\n![${data.name}](${data.url})\n`);
           } else {
@@ -118,8 +140,13 @@ export default function NotesPage() {
       });
       const data = await res.json();
       if (data.nodes && data.nodes.length > 0) {
-        const names = data.nodes.map((n: { name: string }) => n.name).join(", ");
-        setTags((prev) => (prev ? prev + ", " + names : names));
+        const names: string[] = data.nodes.map((n: { name: string }) => n.name);
+        const ids: string[] = data.nodes.map((n: { id: string }) => n.id);
+        setAiTags(names);
+        setAiNodeIds(ids);
+      }
+      if (data.newNodes && data.newNodes.length > 0) {
+        setAiNewNodes(data.newNodes);
       }
     } catch (err) {
       console.error("Categorize failed:", err);
@@ -141,7 +168,8 @@ export default function NotesPage() {
         body: JSON.stringify({
           title: title.trim() || "未命名笔记",
           content: content.trim(),
-          tags: tags.trim() || null,
+          tags: tags.length > 0 ? tags.join(", ") : null,
+          knowledgeNodeIds: aiNodeIds.length > 0 ? aiNodeIds : undefined,
         }),
       });
 
@@ -156,12 +184,21 @@ export default function NotesPage() {
   };
 
   const deleteNote = async (id: string) => {
-    if (!confirm("确定删除这条笔记？")) return;
-    await fetch(`/api/notes/${id}`, { method: "DELETE" });
-    setNotes((prev) => prev.filter((n) => n.id !== id));
+    if (deletingNoteId || !confirm("确定删除这条笔记？删除后无法恢复。")) return false;
+    setDeletingNoteId(id);
+    try {
+      const response = await fetch(`/api/notes/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("删除笔记失败");
+      setNotes((prev) => prev.filter((n) => n.id !== id));
+      return true;
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "删除笔记失败，请重试");
+      return false;
+    } finally {
+      setDeletingNoteId(null);
+    }
   };
 
-  // Parse markdown images for preview
   const renderPreview = (text: string) => {
     const imgRegex = /!\[(.*?)\]\((\/uploads\/[^)]+)\)/g;
     const parts: { type: "text" | "image"; content: string }[] = [];
@@ -252,6 +289,18 @@ export default function NotesPage() {
                   ))}
                 </div>
               )}
+              {note.knowledgeNodes && note.knowledgeNodes.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {note.knowledgeNodes.map((kn) => (
+                    <span
+                      key={kn.id}
+                      className="text-[10px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-500 border border-blue-100"
+                    >
+                      📌 {kn.name}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="text-[10px] text-[var(--muted-foreground)] mt-2">
                 {new Date(note.updatedAt).toLocaleDateString("zh-CN")}
               </div>
@@ -260,10 +309,11 @@ export default function NotesPage() {
                   e.stopPropagation();
                   deleteNote(note.id);
                 }}
-                className="absolute top-3 right-3 w-7 h-7 flex items-center justify-center rounded-lg opacity-0 group-hover:opacity-100 hover:bg-[var(--muted)] transition-opacity"
-                aria-label="删除"
+                disabled={deletingNoteId === note.id}
+                className="absolute top-2 right-2 w-10 h-10 flex items-center justify-center rounded-xl bg-[var(--card)]/90 text-[var(--muted-foreground)] hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 transition-all touch-manipulation shadow-sm md:shadow-none"
+                aria-label={`删除笔记：${note.title}`}
               >
-                <Trash2 size={13} strokeWidth={1.5} />
+                {deletingNoteId === note.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} strokeWidth={1.5} />}
               </button>
             </div>
           ))}
@@ -278,7 +328,6 @@ export default function NotesPage() {
             onClick={() => setShowEditor(false)}
           />
           <div className="fixed inset-x-4 top-[5%] bottom-[5%] md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[600px] z-50 card flex flex-col shadow-2xl">
-            {/* Header */}
             <div className="flex items-center justify-between p-4 border-b border-[var(--card-border)]">
               <h2 className="text-sm font-semibold">
                 {editingNote ? "编辑笔记" : "新建笔记"}
@@ -347,13 +396,65 @@ export default function NotesPage() {
                 className="w-full flex-1 min-h-[200px] text-sm bg-transparent border-none outline-none resize-none placeholder:text-[var(--muted-foreground)] leading-relaxed"
                 autoFocus
               />
-              <input
-                type="text"
-                value={tags}
-                onChange={(e) => setTags(e.target.value)}
-                placeholder="标签（用逗号分隔）"
-                className="w-full text-xs bg-[var(--muted)] rounded-lg px-3 py-2 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] transition-colors placeholder:text-[var(--muted-foreground)]"
-              />
+
+              {/* Tags section */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={tagInput}
+                    onChange={(e) => setTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addTag(tagInput);
+                      }
+                    }}
+                    placeholder="输入标签后按回车添加"
+                    className="flex-1 text-xs bg-[var(--muted)] rounded-lg px-3 py-2 outline-none border border-[var(--card-border)] focus:border-[var(--foreground)] transition-colors placeholder:text-[var(--muted-foreground)]"
+                  />
+                </div>
+                {(tags.length > 0 || aiTags.length > 0) && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-[var(--accent)] text-[var(--accent-foreground)]"
+                      >
+                        {tag}
+                        <button onClick={() => removeTag(tag)} className="hover:opacity-70">
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                    {aiTags
+                      .filter((t) => !tags.includes(t))
+                      .map((tag) => (
+                        <button
+                          key={tag}
+                          onClick={() => addTag(tag)}
+                          className="text-xs px-2.5 py-1 rounded-full bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-[var(--card)] transition-colors"
+                        >
+                          + {tag}
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* AI 新建的知识点 */}
+              {aiNewNodes.length > 0 && (
+                <div className="p-3 rounded-lg bg-green-50 border border-green-100">
+                  <p className="text-xs text-green-700 mb-1.5">✅ 已自动添加到知识图谱：</p>
+                  <div className="flex flex-wrap gap-1">
+                    {aiNewNodes.map((n, i) => (
+                      <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+                        {n.name}（{n.subject}）
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Attachments preview */}
               {attachments.length > 0 && (
@@ -387,13 +488,13 @@ export default function NotesPage() {
             <div className="flex items-center justify-between p-4 border-t border-[var(--card-border)]">
               {editingNote && (
                 <button
-                  onClick={() => {
-                    deleteNote(editingNote.id);
-                    setShowEditor(false);
+                  onClick={async () => {
+                    if (await deleteNote(editingNote.id)) setShowEditor(false);
                   }}
-                  className="text-xs text-red-500 hover:text-red-600 transition-colors"
+                  disabled={deletingNoteId === editingNote.id}
+                  className="min-h-11 px-3 text-xs text-red-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors touch-manipulation disabled:opacity-50"
                 >
-                  删除笔记
+                  {deletingNoteId === editingNote.id ? "删除中..." : "删除笔记"}
                 </button>
               )}
               <div className="flex gap-2 ml-auto">

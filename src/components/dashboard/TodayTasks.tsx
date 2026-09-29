@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckSquare, Plus, Loader2 } from "lucide-react";
+import { CheckSquare, Plus, Loader2, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Task {
@@ -12,10 +12,17 @@ interface Task {
   subject?: { name: string; color: string } | null;
 }
 
+function priorityDotClass(priority: number) {
+  if (priority >= 2) return "bg-red-500";
+  if (priority === 1) return "bg-yellow-400";
+  return "bg-green-500";
+}
+
 export default function TodayTasks({ tasks }: { tasks: Task[] }) {
   const [taskList, setTaskList] = useState(tasks);
   const [newTitle, setNewTitle] = useState("");
   const [adding, setAdding] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const toggleTask = async (id: string) => {
     setTaskList((prev) =>
@@ -59,6 +66,20 @@ export default function TodayTasks({ tasks }: { tasks: Task[] }) {
     }
   };
 
+  const deleteTask = async (id: string) => {
+    if (deletingId || !confirm("确定删除这个任务？")) return;
+    setDeletingId(id);
+    try {
+      const response = await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error("删除任务失败");
+      setTaskList((prev) => prev.filter((task) => task.id !== id));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "删除任务失败，请重试");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div className="card p-4 md:p-5">
       <div className="flex items-center justify-between mb-3 md:mb-4">
@@ -73,12 +94,12 @@ export default function TodayTasks({ tasks }: { tasks: Task[] }) {
 
       <div className="space-y-0.5">
         {taskList.map((task) => (
-          <button
+          <div
             key={task.id}
-            onClick={() => toggleTask(task.id)}
-            className="w-full flex items-center gap-3 p-3 md:p-2.5 rounded-lg hover:bg-[var(--muted)] active:bg-[var(--card-border)] transition-colors text-left group touch-manipulation min-h-[44px]"
+            className="w-full flex items-center gap-1 p-1 rounded-xl hover:bg-[var(--muted)] transition-colors text-left group min-h-[48px]"
           >
-            <div
+            <button onClick={() => toggleTask(task.id)} className="flex flex-1 min-w-0 items-center gap-3 p-2 text-left touch-manipulation">
+            <span
               className={cn(
                 "w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors",
                 task.completed
@@ -103,7 +124,11 @@ export default function TodayTasks({ tasks }: { tasks: Task[] }) {
                   />
                 </svg>
               )}
-            </div>
+            </span>
+            <span
+              className={`w-2 h-2 rounded-full flex-shrink-0 ${priorityDotClass(task.priority)}`}
+              aria-label={task.priority >= 2 ? "紧急" : task.priority === 1 ? "重要" : "普通"}
+            />
             <div className="flex-1 min-w-0">
               <span
                 className={cn(
@@ -119,10 +144,11 @@ export default function TodayTasks({ tasks }: { tasks: Task[] }) {
                 {task.subject.name}
               </span>
             )}
-            {task.priority > 0 && (
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0" />
-            )}
-          </button>
+            </button>
+            <button onClick={() => deleteTask(task.id)} disabled={deletingId === task.id} className="w-10 h-10 flex items-center justify-center rounded-xl text-[var(--muted-foreground)] hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 transition-all touch-manipulation" aria-label={`删除任务：${task.title}`}>
+              {deletingId === task.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            </button>
+          </div>
         ))}
       </div>
 

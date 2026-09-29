@@ -1,7 +1,7 @@
 "use client";
 
-import { Settings, User, GraduationCap, Palette, Database, Check, Loader2 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { Settings, User, GraduationCap, Palette, Database, Check, Loader2, Download, Upload } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 export default function SettingsPage() {
   const [examDate, setExamDate] = useState("");
@@ -9,6 +9,10 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<"name" | "examDate" | null>(null);
   const [saved, setSaved] = useState<"name" | "examDate" | null>(null);
+  const [backupStatus, setBackupStatus] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [lastBackupAt, setLastBackupAt] = useState("");
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch("/api/user")
@@ -18,6 +22,7 @@ export default function SettingsPage() {
         if (data.examDate) {
           setExamDate(new Date(data.examDate).toISOString().split("T")[0]);
         }
+        setLastBackupAt(localStorage.getItem("kaoyan-last-backup") || "");
       })
       .finally(() => setLoading(false));
   }, []);
@@ -39,6 +44,53 @@ export default function SettingsPage() {
     }
     setSaving(null);
   }, []);
+
+  async function exportBackup() {
+    setBackupBusy(true);
+    setBackupStatus("");
+    try {
+      const response = await fetch("/api/backup");
+      if (!response.ok) throw new Error("导出失败");
+      const backup = await response.json();
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `kaoyan-backup-${new Date().toISOString().split("T")[0]}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      const savedAt = new Date().toISOString();
+      localStorage.setItem("kaoyan-last-backup", savedAt);
+      setLastBackupAt(savedAt);
+      setBackupStatus("备份已导出");
+    } catch {
+      setBackupStatus("备份导出失败");
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function importBackup(file: File) {
+    if (!confirm("导入会用备份内容替换当前全部数据，确定继续吗？")) return;
+    setBackupBusy(true);
+    setBackupStatus("");
+    try {
+      const backup = JSON.parse(await file.text());
+      const response = await fetch("/api/backup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(backup),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "导入失败");
+      setBackupStatus("备份已导入，请刷新页面查看");
+    } catch (error) {
+      setBackupStatus(error instanceof Error ? error.message : "备份导入失败");
+    } finally {
+      setBackupBusy(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  }
 
   if (loading) return null;
 
@@ -113,13 +165,32 @@ export default function SettingsPage() {
           <Database size={14} strokeWidth={1.5} />
           数据
         </h2>
-        <div className="flex items-center justify-between min-h-[36px]">
-          <span className="text-sm text-[var(--muted-foreground)]">同步状态</span>
-          <span className="text-xs flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            已同步
-          </span>
+        <div className="text-sm text-[var(--muted-foreground)]">
+          数据保存在本机 SQLite 中。建议定期导出备份文件。
         </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button onClick={exportBackup} disabled={backupBusy} className="btn btn-primary text-sm gap-2">
+            {backupBusy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            导出全部数据
+          </button>
+          <button onClick={() => importInputRef.current?.click()} disabled={backupBusy} className="btn btn-secondary text-sm gap-2">
+            <Upload size={14} />导入备份
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void importBackup(file);
+            }}
+          />
+        </div>
+        {lastBackupAt && (
+          <p className="text-xs text-[var(--muted-foreground)]">最近导出：{new Date(lastBackupAt).toLocaleString("zh-CN")}</p>
+        )}
+        {backupStatus && <p className="text-xs text-center">{backupStatus}</p>}
       </div>
     </div>
   );

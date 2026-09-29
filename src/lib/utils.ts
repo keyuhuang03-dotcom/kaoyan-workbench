@@ -1,5 +1,3 @@
-import { clsx, type ClassValue } from "clsx";
-
 // Simple clsx implementation
 export function cn(...inputs: (string | boolean | undefined | null)[]) {
   return inputs.filter(Boolean).join(" ");
@@ -20,7 +18,13 @@ export function formatMinutes(minutes: number) {
 }
 
 export function getGreeting(): { greeting: string; emoji: string } {
-  const hour = new Date().getHours();
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      hour: "2-digit",
+      hour12: false,
+      timeZone: "Asia/Shanghai",
+    }).format(new Date())
+  );
   if (hour < 12) return { greeting: "Good morning", emoji: "☀️" };
   if (hour < 18) return { greeting: "Good afternoon", emoji: "🌤" };
   return { greeting: "Good evening", emoji: "🌙" };

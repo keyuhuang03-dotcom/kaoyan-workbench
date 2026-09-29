@@ -34,17 +34,14 @@ export default function AIAssistant() {
         {loading ? "AI 正在分析你的学习数据..." : advice}
       </p>
 
-      <div className="flex flex-col sm:flex-row gap-2">
+      <div>
         <button
           onClick={getAdvice}
           disabled={loading}
-          className="btn btn-primary text-sm gap-2 flex-1"
+          className="btn btn-primary text-sm gap-2 w-full"
         >
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           刷新建议
-        </button>
-        <button className="btn btn-secondary text-sm flex-1">
-          生成今日计划
         </button>
       </div>
     </div>

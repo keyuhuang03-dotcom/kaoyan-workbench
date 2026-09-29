@@ -7,8 +7,6 @@ export async function GET() {
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
 
-  const user = await prisma.user.findFirst();
-
   const [todaySessions, recentSessions] = await Promise.all([
     prisma.studySession.findMany({
       where: { date: { gte: today, lt: tomorrow } },
